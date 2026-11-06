@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from shopping_grpo.environment.tools import SHOP_TOOL_SCHEMAS  # noqa: E402
+from shopping_grpo.environment.protocol import message_protocol_problem, runtime_protocol  # noqa: E402
 
 OUT = ROOT / "outputs/sft_dataset"
 DEFAULT_MAX_TOKENS = 16384
@@ -52,6 +53,7 @@ def arrow_schema():
         ("tokens", pa.int64()),
         ("messages", pa.list_(message)),
         ("tools", pa.string()),
+        ("runtime_protocol", pa.string()),
         ("enable_thinking", pa.bool_()),
         ("accept_reason", pa.string()),
         ("reward_type", pa.string()),
@@ -94,6 +96,11 @@ def parse_arguments(record_id, tool_call):
 
 def slim_messages(sample):
     record_id = sample["record_id"]
+    if sample.get("runtime_protocol") != runtime_protocol():
+        raise ValueError(f"{record_id}: runtime protocol mismatch; rebuild current demonstrations")
+    problem = message_protocol_problem(sample["messages"])
+    if problem:
+        raise ValueError(f"{record_id}: {problem}")
     messages = []
     for m in sample["messages"]:
         role = m["role"]
@@ -190,6 +197,7 @@ def main():
             "tokens": tokens[s["record_id"]],
             "messages": slim_messages(s),
             "tools": tools_json,
+            "runtime_protocol": json.dumps(runtime_protocol(), sort_keys=True),
             "enable_thinking": False,
             "accept_reason": s.get("accept_reason"),
             "reward_type": s.get("reward_type"),

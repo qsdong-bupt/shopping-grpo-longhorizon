@@ -30,37 +30,16 @@ TOOL_REQUIRED_ARGUMENT_NAMES = {
     tool["function"]["name"]: set(tool["function"]["parameters"].get("required", []))
     for tool in SHOP_TOOL_SCHEMAS
 }
-SUBPAGE_TOOLS = {
-    "view_description": "Description",
-    "view_features": "Features",
-    "view_reviews": "Reviews",
-    "view_attributes": "Attributes",
-}
 
 
-def current_page_asin(observation):
-    """从详情页/子页 observation 提取当前商品的 ASIN。"""
-    match = re.search(r"(?m)^asin:\s*(\S+)", observation)
-    return match.group(1) if match else None
-
-
-def subpage_visit_key(name, observation):
-    """返回子页访问的去重键 (asin, subpage)；非子页工具返回 None。"""
-    subpage = SUBPAGE_TOOLS.get(name)
-    if subpage is None:
-        return None
-    asin = current_page_asin(observation)
-    if not asin:
-        return None
-    return (asin, subpage)
-
-
-def action_reject_reason(name, arguments, observation, visited_subpages=None):
+def action_reject_reason(name, arguments, observation):
     """返回动作拒绝原因；``None`` 表示允许执行。
 
 检查顺序很重要：先拦截 schema 外字段，再处理无需页面状态的动作，最后只允许
 点击最新 observation 中仍然存在的目标。
 """
+    if name not in TOOL_ARGUMENT_NAMES:
+        return "unknown_or_invalid_tool"
     extra_argument_names = _schema_extra_argument_names(name, arguments)
     if extra_argument_names:
         return "schema_extra_arguments:" + ",".join(extra_argument_names)
@@ -82,11 +61,6 @@ def action_reject_reason(name, arguments, observation, visited_subpages=None):
         if asin not in product_ids(observation):
             return "click_not_in_previous_observation"
         return None
-    if visited_subpages is not None:
-        key = subpage_visit_key(name, observation)
-        if key is not None and key in visited_subpages:
-            return "subpage_already_visited"
-
     try:
         action = tool_call_to_action(name, arguments)
     except Exception:
@@ -126,17 +100,7 @@ def action_guard_tool_message(tool_call, reason, observation):
     if targets:
         parts.append("可点击按钮: " + ", ".join(targets[:30]))
     allowed = "；".join(parts) or "当前页面没有可用点击目标"
-    return_tools = []
-    normalized_targets = {target.casefold() for target in targets}
-    if "< prev" in normalized_targets:
-        return_tools.append("prev_page")
-    if "back to search" in normalized_targets:
-        return_tools.append("back_to_search")
-    only_return_buttons = bool(normalized_targets) and normalized_targets <= {"< prev", "back to search"}
-    if only_return_buttons:
-        correction = f"你处于信息子页，下一步只能调用 {' 或 '.join(return_tools)}。"
-    else:
-        correction = "下一步只能从当前页面列出的目标中选择。"
+    correction = "下一步只能从当前页面列出的目标中选择。"
     return {
         "role": "tool",
         "tool_call_id": tool_call.get("id"),

@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from shopping_grpo.environment.protocol import runtime_protocol
 from build_sft_dataset import (  # noqa: E402
     admission_problem,
     admission_audit,
@@ -38,6 +39,7 @@ def _terminal(reward_type="gold_purchase", reward_valid=True, over=True,
 
 def _trajectory(messages=None, reward_type="gold_purchase", **kwargs):
     return {
+        "runtime_protocol": runtime_protocol(),
         "messages": messages or [],
         "terminal_result": _terminal(reward_type=reward_type, **kwargs),
         "meta": {
@@ -59,7 +61,7 @@ class ArgumentValidationTest(unittest.TestCase):
         self.assertIsNone(tool_call_argument_problem(call))
 
     def test_null_argument_value_rejected(self):
-        call = {"function": {"name": "view_features",
+        call = {"function": {"name": "buy_now",
                              "arguments": '{"__dummy__": null}'}}
         self.assertIn("argument_value_null", tool_call_argument_problem(call))
 
@@ -97,7 +99,7 @@ class AdmissionTest(unittest.TestCase):
         trajectory = _trajectory(messages=[
             {"role": "assistant", "tool_calls": [
                 {"id": "c1", "function": {
-                    "name": "view_features",
+                    "name": "buy_now",
                     "arguments": '{"__dummy__": null}'}}]},
         ])
         self.assertTrue(
@@ -130,7 +132,7 @@ class GuardTrainFlagTest(unittest.TestCase):
             {"role": "tool", "tool_call_id": "c1", "content": "结果页"},
             {"role": "assistant", "tool_calls": [
                 {"id": "c2", "function": {
-                    "name": "view_features",
+                    "name": "buy_now",
                     "arguments": '{"__dummy__": "x"}'}}]},
             {"role": "tool", "tool_call_id": "c2", "content": "守卫拒绝",
              "runtime_action_guard": True},

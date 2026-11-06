@@ -448,7 +448,7 @@ def evaluate_candidate_eligibility(product: dict, goal: dict) -> dict:
     return {
         "status": PASS if known_acceptable else FAIL,
         "known_acceptable": known_acceptable,
-        # Compatibility field for the Environment v2.1 session state.
+        # Compatibility field for the Environment v2.2 session state.
         "known_valid": known_acceptable,
         "selected_options": selected,
         "option_resolution": option_resolution,

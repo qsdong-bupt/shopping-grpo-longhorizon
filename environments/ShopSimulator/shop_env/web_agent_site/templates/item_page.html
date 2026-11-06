@@ -56,30 +56,11 @@
           <h4>店铺: {{product_info.shop_name}}</h4>
           <!-- <h4 id="product-price">价格: {{price}}</h4> -->
 <!--          <h4>Rating: {{product_info.Rating}}</h4>>-->
-          <div class="row top-buffer">
-            <div class="col-sm-3" name="description">
-              <form method="post" action="{{ url_for('item_sub_page', session_id=session_id, asin=asin, keywords=keywords, page=page, sub_page='Description', options=options) }}">
-                <button class="btn btn-primary" type="submit">Description</button>
-              </form>
-            </div>
-            <div class="col-sm-3" name="bulletpoints">
-              <form method="post" action="{{ url_for('item_sub_page', session_id=session_id, asin=asin, keywords=keywords, page=page, sub_page='Features', options=options) }}">
-                <button class="btn btn-primary" type="submit">Features</button>
-              </form>
-            </div>
-            <div class="col-sm-3" name="reviews">
-              <form method="post" action="{{ url_for('item_sub_page', session_id=session_id, asin=asin, keywords=keywords, page=page, sub_page='Reviews', options=options) }}">
-                <button class="btn btn-primary" type="submit">Reviews</button>
-              </form>
-            </div>
-            {% if show_attrs %}
-            <div class="col-sm-3" name="attributes">
-              <form method="post" action="{{ url_for('item_sub_page', session_id=session_id, asin=asin, keywords=keywords, page=page, sub_page='Attributes', options=options) }}">
-                <button class="btn btn-primary" type="submit">Attributes</button>
-              </form>
-            </div>
-            {% endif %}
-          </div>
+          <ul class="product-attributes">
+            {% for attribute in product_info.Attributes %}
+              <li>{{ attribute }}</li>
+            {% endfor %}
+          </ul>
         </div>
         <div class="col-sm-2">
           <div class="row top-buffer">

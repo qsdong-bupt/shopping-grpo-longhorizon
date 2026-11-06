@@ -1,9 +1,9 @@
 {
-  "environment_version": "shopsimulator-environment-v2.1",
+  "environment_version": "shopsimulator-environment-v2.2",
   "lease_contract": "explicit-client-release-v1",
   "manifest_version": "shopping-environment-manifest-v1",
   "max_steps": 35,
-  "observation_version": "shopping-observation-v2",
+  "observation_version": "shopping-observation-v3",
   "product_data_sha256": "57b10950a0064d16c81535a1d764a75879a508d250dde8a2a1787c5e6045559f",
   "reward": {
     "early_abstain": -0.35,
@@ -35,12 +35,19 @@
   },
   "seed": 20260728,
   "runtime_files_sha256": {
-    "observation.py": "adabdf0109b8a0f592148c098e44065913ce6c699230047239d8809f412bf998",
+    "tool_schema.py": "59e69700d635322cd43b6d022ba8a091455866c2e69fd39b89f99c8ca794ed19",
+    "renderer.py": "09cce30541fb956a2658945930f8c77d86be1dd2f9e3a03495e4fe7ae18c7457",
+    "projection.py": "83b7261b7de34ff4b06afa834a932f20f8b7a1f2844d296c0337f6cf3c236ef0",
+    "item_page.html": "30873b07812aa8c4a753dab96e772d93f0dfc0df34b191d722d6a604b60c1350",
+    "termination.py": "6de366cf8dac650ba362a686adbc18ecc5c5c24b180e58708b45dfc81f799fbd",
+    "engine.py": "85ab9d34a8d3564d19da6c25f9d69fe303383c3aca111795d337ec1b6598eee5",
+    "environment_config.json": "c4d752134a5abced7d71fd62a6c87629b5087dbd4cd3e56f7936daedcf3c4377",
+    "observation.py": "f17c1ba1693721961b4aa054b5684414b05049f21ff1aa4fe9bf35b74f751171",
     "pack_api.py": "d491f2620c60c115547f330a2e0c131b2796779b718d02cb5318b1bedfe5aadc",
-    "reward.py": "ea692a5bd91c95dc086925372667e74328c0f86b3d6f1c67df3c59883df8990e",
+    "reward.py": "89330d66bf5e413a6877b2802fa4431a96a3f52487f40532c0f6e3637ae8088d",
     "slot_lease_pool.py": "5be40275eebbed6735196a1dea4581ce707558e247d23d0de4d98907772a0420",
-    "web_agent_text_env.py": "448f5ec31fe5a71d1e43376d42cd84787a0e48fe96a8032fc0383f65e5928ea2"
+    "web_agent_text_env.py": "dbc979ffdc6818004a45207762c40576ea679fb67d0beef8f78611311ce3ddbb"
   },
   "shopsimulator_commit": "9ecba272963960ab4a10e1a781bd05cd7634ce20",
-  "tool_version": "shopping-tools-v2"
+  "tool_version": "shopping-tools-v3"
 }

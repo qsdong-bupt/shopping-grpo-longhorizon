@@ -16,7 +16,7 @@ class EnvironmentV21ConfigTest(unittest.TestCase):
         config = load_config(CONFIG)
         self.assertEqual(
             config["environment_version"],
-            "shopsimulator-environment-v2.1",
+            "shopsimulator-environment-v2.2",
         )
         self.assertEqual(config["reward"]["wrong_purchase"], -0.85)
         self.assertEqual(config["reward"]["partial_purchase_base"], -0.30)
@@ -27,7 +27,7 @@ class EnvironmentV21ConfigTest(unittest.TestCase):
         )
         self.assertEqual(
             config["termination"]["version"],
-            "shopping-termination-v3",
+            "shopping-termination-v4",
         )
 
     def test_reward_drift_is_rejected(self):

@@ -11,13 +11,14 @@ from pathlib import Path
 
 import pandas as pd
 
-ROOT = Path("/data/jyh-yyh/shopping-grpo-longhorizon")
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 # 正式跑桶配额：th=teacher_hard。比例 30/30/28/12，标签口径下 hard 类约 45%
 QUOTA = {"teacher_hard": 0.30, "hard": 0.30, "medium": 0.28, "easy": 0.12}
 
 from shopping_grpo.evaluation.rollout import STUDENT_SYSTEM_PROMPT  # noqa: E402
+from shopping_grpo.environment.protocol import runtime_protocol  # noqa: E402
 from shopping_grpo.persona.render import render_persona  # noqa: E402
 
 
@@ -110,6 +111,7 @@ def main():
             "ability": "shopping",
             "reward_model": {"style": "rule", "ground_truth": None},
             "extra_info": {
+                "runtime_protocol": runtime_protocol(),
                 "task_id": index_of[t["record_id"]],
                 "record_id": t["record_id"],
                 "difficulty": t["difficulty"],

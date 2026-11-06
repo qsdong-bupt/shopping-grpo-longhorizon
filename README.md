@@ -9,7 +9,7 @@
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![veRL](https://img.shields.io/badge/veRL-0.9.1-0E8A16)](https://github.com/verl-project/verl)
 [![vLLM](https://img.shields.io/badge/vLLM-0.25.0-0E6DB8)](https://github.com/vllm-project/vllm)
-[![ShopSimulator](https://img.shields.io/badge/Environment-ShopSimulator%20v2.1-4C78A8)](https://arxiv.org/pdf/2601.18225)
+[![ShopSimulator](https://img.shields.io/badge/Environment-ShopSimulator%20v2.2-4C78A8)](https://arxiv.org/pdf/2601.18225)
 
 ## 环境与依赖
 
@@ -41,6 +41,11 @@ bash scripts/setup.sh        # 安装环境依赖与 ShopSimulator
 汇总在 `summary.json`。正式评测需用户明确指令后才执行。
 
 设计决策与执行记录见 `docs/plans/`（基线、交接、数据验收记录、工作总结）。
+
+当前交互协议为 Environment v2.2 / observation v3 / tool schema v3，仅公开 8 个工具。
+商品详情页直接提供全部属性，已移除描述、评论、属性、特点四个信息子页及其按钮。
+旧协议的示范、SFT/GRPO 数据和评测输出不能直接混入新运行；需重新采集或构建并使用新的评测名称。
+实现与验证范围见 [移除信息页工具的变更记录](docs/plans/2026-11-06-remove-information-tools.md)。
 
 ## 评测契约
 

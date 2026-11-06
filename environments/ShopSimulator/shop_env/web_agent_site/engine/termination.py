@@ -1,4 +1,4 @@
-"""Bounded evidence-progress tracking for Environment v2.1."""
+"""Bounded evidence-progress tracking for Environment v2.2."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from web_agent_site.engine.reward_features import (
 from web_agent_site.engine.search import normalize_query
 
 
-TERMINATION_VERSION = "shopping-termination-v3"
+TERMINATION_VERSION = "shopping-termination-v4"
 PAGINATION_ACTIONS = {"next >", "< prev"}
 
 
@@ -44,7 +44,6 @@ class EvidenceProgressTracker:
     no_progress_limit: int = 4
     min_new_asins_per_result_set: int = 3
     product_open_progress_budget: int = 5
-    subpage_progress_budget: int = 6
     result_set_progress_budget: int = 3
     steps: int = 0
     last_signature: str | None = None
@@ -53,10 +52,8 @@ class EvidenceProgressTracker:
     seen_asins: set[str] = field(default_factory=set)
     opened_asins: set[str] = field(default_factory=set)
     runtime_result_fingerprints: set[str] = field(default_factory=set)
-    runtime_subpage_evidence: set[str] = field(default_factory=set)
     result_set_evidence: set[str] = field(default_factory=set)
     product_evidence: set[str] = field(default_factory=set)
-    subpage_evidence: set[str] = field(default_factory=set)
     option_evidence: set[str] = field(default_factory=set)
     constraint_evidence: set[str] = field(default_factory=set)
 
@@ -127,20 +124,6 @@ class EvidenceProgressTracker:
                     self.product_evidence.add(key)
                     credited_evidence_added.append(key)
 
-        if (
-            normalized_name == "click"
-            and page_type == "information_subpage"
-            and visible_ordered
-        ):
-            asin = visible_ordered[0]
-            key = f"subpage:{asin}:{normalized_argument}"
-            if key not in self.runtime_subpage_evidence:
-                self.runtime_subpage_evidence.add(key)
-                runtime_progress_added.append(key)
-                if len(self.subpage_evidence) < self.subpage_progress_budget:
-                    self.subpage_evidence.add(key)
-                    credited_evidence_added.append(key)
-
         if isinstance(selected_options, dict) and visible_ordered:
             asin = visible_ordered[0]
             for raw_axis, raw_value in selected_options.items():
@@ -191,14 +174,12 @@ class EvidenceProgressTracker:
             "runtime_evidence_counts": {
                 "result_set": len(self.runtime_result_fingerprints),
                 "product": len(self.opened_asins),
-                "subpage": len(self.runtime_subpage_evidence),
                 "option": len(self.option_evidence),
                 "constraint": len(self.constraint_evidence),
             },
             "evidence_counts": {
                 "result_set": len(self.result_set_evidence),
                 "product": len(self.product_evidence),
-                "subpage": len(self.subpage_evidence),
                 "option": len(self.option_evidence),
                 "constraint": len(self.constraint_evidence),
             },

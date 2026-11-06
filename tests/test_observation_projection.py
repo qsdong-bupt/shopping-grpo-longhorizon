@@ -19,7 +19,7 @@ from shopping_grpo.environment.observation import render_structured_observation
 def search_page(product_count=12, page=1):
     buttons = ["back to search", "next >"]
     lines = [
-        "[SHOPPING_OBSERVATION_V2]",
+        "[SHOPPING_OBSERVATION_V3]",
         "page_type: search_results",
         "query: useful product",
         "normalized_query: useful product",
@@ -134,7 +134,7 @@ class ObservationProjectionTest(unittest.TestCase):
             + '\n\n可点击的按钮: ["back to search", "< prev"]'
         )
         visible, meta = project_observation(
-            "view_description",
+            "prev_page",
             raw,
             count_tokens=len,
             generic_token_budget=300,
@@ -172,7 +172,7 @@ class ObservationProjectionTest(unittest.TestCase):
         ]
         raw = render_structured_observation(
             {
-                "observation_version": "shopping-observation-v2",
+                "observation_version": "shopping-observation-v3",
                 "page_type": "search_results",
                 "search_available": False,
                 "actions": [
@@ -216,7 +216,7 @@ class ObservationProjectionTest(unittest.TestCase):
         ]
         raw = render_structured_observation(
             {
-                "observation_version": "shopping-observation-v2",
+                "observation_version": "shopping-observation-v3",
                 "page_type": "search_results",
                 "search_available": False,
                 "actions": ["back to search", *asins],

@@ -13,12 +13,14 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from export_sft_parquet import arrow_schema, slim_messages, _fill  # noqa: E402
+from shopping_grpo.environment.protocol import runtime_protocol
 from shopping_grpo.environment.tools import SHOP_TOOL_SCHEMAS  # noqa: E402
 
 MODEL = os.environ.get(
     "SHOP_MODEL", str(ROOT / "models/Qwen3.5-9B"))
 
 SAMPLE = {
+    "runtime_protocol": runtime_protocol(),
     "record_id": "100000000001",
     "teacher": "glm",
     "difficulty": "easy",
@@ -42,6 +44,7 @@ SAMPLE = {
 
 # 中段 assistant 动作被本地守卫拒绝（train=0）：仍渲染为上下文，但不进 loss。
 GUARD_SAMPLE = {
+    "runtime_protocol": runtime_protocol(),
     "record_id": "100000000002",
     "teacher": "glm",
     "difficulty": "easy",
@@ -85,6 +88,7 @@ def write_parquet(path, samples):
             "tokens": s.get("tokens", 10),
             "messages": slim_messages(s),
             "tools": tools_json,
+            "runtime_protocol": json.dumps(runtime_protocol(), sort_keys=True),
             "enable_thinking": False,
         })
     schema = arrow_schema()
@@ -102,11 +106,12 @@ class ExporterFailFastTest(unittest.TestCase):
     @staticmethod
     def _sample(arguments, train=1):
         return {
+            "runtime_protocol": runtime_protocol(),
             "record_id": "R1",
             "messages": [
                 {"role": "assistant", "train": train, "content": None,
                  "tool_calls": [{"id": "x", "type": "function", "function": {
-                     "name": "view_features", "arguments": arguments}}]},
+                     "name": "buy_now", "arguments": arguments}}]},
             ],
         }
 

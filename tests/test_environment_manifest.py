@@ -14,7 +14,7 @@ class EnvironmentManifestTest(unittest.TestCase):
     def test_current_environment_contract_is_validated(self):
         manifest = {
             "manifest_version": MANIFEST_VERSION,
-            "environment_version": "shopsimulator-environment-v2.1",
+            "environment_version": "shopsimulator-environment-v2.2",
             "shopsimulator_commit": "a" * 40,
             "product_data_sha256": "c" * 64,
             "search": {
@@ -22,8 +22,8 @@ class EnvironmentManifestTest(unittest.TestCase):
                 "page_size": 20,
             },
             "reward": {"version": "shopsimulator-reward-v3"},
-            "observation_version": "shopping-observation-v2",
-            "tool_version": "shopping-tools-v2",
+            "observation_version": "shopping-observation-v3",
+            "tool_version": "shopping-tools-v3",
             "max_steps": 35,
             "seed": 20260726,
         }
@@ -36,7 +36,7 @@ class EnvironmentManifestTest(unittest.TestCase):
     def test_current_environment_requires_reward_v3(self):
         manifest = {
             "manifest_version": MANIFEST_VERSION,
-            "environment_version": "shopsimulator-environment-v2.1",
+            "environment_version": "shopsimulator-environment-v2.2",
             "shopsimulator_commit": "a" * 40,
             "product_data_sha256": "c" * 64,
             "search": {
@@ -44,8 +44,8 @@ class EnvironmentManifestTest(unittest.TestCase):
                 "page_size": 20,
             },
             "reward": {"version": "shopsimulator-reward-v3"},
-            "observation_version": "shopping-observation-v2",
-            "tool_version": "shopping-tools-v2",
+            "observation_version": "shopping-observation-v3",
+            "tool_version": "shopping-tools-v3",
             "max_steps": 35,
             "seed": 20260726,
         }
@@ -64,12 +64,12 @@ class EnvironmentManifestTest(unittest.TestCase):
                 "page_size": 20,
             },
             "reward": {"version": "shopsimulator-reward-v3"},
-            "observation_version": "shopping-observation-v2",
+            "observation_version": "shopping-observation-v3",
             "tool_version": "unsupported-tools",
             "max_steps": 35,
             "seed": 20260726,
         }
-        with self.assertRaisesRegex(ValueError, "Tool v2"):
+        with self.assertRaisesRegex(ValueError, "Tool v3"):
             validate_manifest(manifest)
 
     def test_embedded_shopsimulator_commit_is_read_without_nested_git(self):

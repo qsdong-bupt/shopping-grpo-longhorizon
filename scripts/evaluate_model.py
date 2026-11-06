@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from shopping_grpo.evaluation.metrics import compute_deterministic_metrics  # noqa: E402
+from shopping_grpo.environment.protocol import runtime_protocol  # noqa: E402
 from shopping_grpo.evaluation.rollout import (  # noqa: E402
     CollectionInfrastructureError,
     STUDENT_SYSTEM_PROMPT,
@@ -37,6 +38,18 @@ DEFAULT_TASKS = ROOT / "outputs/split/tasks_final.jsonl"
 ENV_PRODUCT_DATA = (
     ROOT / "environments/ShopSimulator/shop_env/data/fine_items_eval_train_all.json.gz"
 )
+
+
+def ensure_run_identity(out_dir, identity):
+    path = Path(out_dir) / "run_identity.json"
+    if path.exists():
+        if json.loads(path.read_text(encoding="utf-8")) != identity:
+            raise ValueError("Evaluation run configuration changed; use a new --name")
+    else:
+        trajectories = Path(out_dir) / "trajectories.jsonl"
+        if trajectories.exists() and trajectories.stat().st_size:
+            raise ValueError("Existing evaluation has no protocol identity; use a new --name")
+        path.write_text(json.dumps(identity, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def build_env_tasks(split, limit, task_ids=None):
@@ -237,6 +250,13 @@ def main():
         )
 
     env_tasks = build_env_tasks(args.split, args.limit, args.task_ids)
+    identity = {
+        "runtime_protocol": runtime_protocol(),
+        "model": args.model, "base_url": args.base_url, "env_url": args.env_url,
+        "max_steps": args.max_steps, "max_tokens": args.max_tokens,
+        "temperature": args.temperature, "tasks": env_tasks,
+    }
+    ensure_run_identity(out_dir, identity)
     print(f"评测 {args.name}：{len(env_tasks)} 题，模型 {args.base_url} 的 "
           f"{args.model}，环境 {args.env_url}", flush=True)
     collect_tasks_parallel(
@@ -248,7 +268,8 @@ def main():
         workers=args.workers,
     )
     summary = {
-        "schema_version": "shopping-evaluation-summary-v1",
+        "schema_version": "shopping-evaluation-summary-v2",
+        "runtime_protocol": runtime_protocol(),
         **summarize(trajectories_path, env_tasks),
     }
     (out_dir / "summary.json").write_text(

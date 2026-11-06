@@ -3,7 +3,7 @@
   base_url: ${oc.env:SHOPSIM_BASE_URL,http://127.0.0.1:5700}
   timeout: 60
   max_steps: 35
-  required_environment_version: shopsimulator-environment-v2.1
+  required_environment_version: shopsimulator-environment-v2.2
   reward_mode: constraint_aware
   context_window_tokens: 24576
   context_generation_reserve_tokens: 512

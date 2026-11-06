@@ -61,7 +61,6 @@ def make_runtime_state(task_id: int, max_steps: int) -> dict:
         "latest_observation_truncated": False,
         "observation_footer_failures": 0,
         "guard_rejection_count": 0,
-    "visited_subpages": set(),
         "guard_rejection_reason_counts": {},
         "guard_rejection_after_truncation_count": 0,
         "action_attempt_after_truncation_count": 0,
@@ -110,7 +109,7 @@ def record_action_attempt(state: dict, tool_name: str, parameters: dict, observa
 
 
 def validate_reward(raw_detail: object) -> dict:
-    """Validate and minimize public Environment v2.1 / Reward v3 diagnostics."""
+    """Validate and minimize public Environment v2.2 / Reward v3 diagnostics."""
     if not isinstance(raw_detail, Mapping):
         raise ValueError("reward_detail must be an object")
     if raw_detail.get("reward_version") != "shopsimulator-reward-v3":
@@ -225,18 +224,10 @@ def _normal_terminal(state: dict) -> bool:
 TRUNCATION_REWARD = -0.65
 WRONG_PURCHASE_EFFORT_REWARD = -0.45   # 探索充分后买错
 WRONG_PURCHASE_CARELESS_REWARD = -1.00  # 未充分探索就买错
-EXPLORATION_SUFFICIENT_SCORE = 2       # 探索分 >= 2 视为"尽力"
-
-# 探索充分度的三个行为信号（用轨迹里可数的动作，不是步数——防"拖步数刷分"）：
-# 1. 打开过 >=2 个不同候选商品（比较过）
-# 2. 用过 view_* 信息页工具 >=1 次（核验过）
-# 3. 用过 >=2 个不同搜索参数（换过方向）
-# 防作弊：探索分只在买错档生效（买对不看探索，无刷分动机链）。
-_VALUED_VIEW_TOOLS = ("view_description", "view_features", "view_reviews", "view_attributes")
-
+EXPLORATION_SUFFICIENT_SCORE = 2       # 至少两个候选且至少两种搜索参数
 
 def exploration_score(state: dict) -> tuple[int, dict]:
-    """轨迹探索充分度（0-3）与明细，reward v4 买错细分依据。"""
+    """轨迹探索充分度（0-2）与明细，reward v4 买错细分依据。"""
     steps = state.get("steps") or []
     opened = {
         json.dumps(s.get("parameters") or {}, sort_keys=True, ensure_ascii=False)
@@ -248,15 +239,12 @@ def exploration_score(state: dict) -> tuple[int, dict]:
         for s in steps
         if s.get("tool") == "search_products"
     }
-    verified = any(s.get("tool") in _VALUED_VIEW_TOOLS for s in steps)
     score = (
         (1 if len(opened) >= 2 else 0)
-        + (1 if verified else 0)
         + (1 if len(queries) >= 2 else 0)
     )
     return score, {
         "opened_candidates": len(opened),
-        "verified_information_page": bool(verified),
         "distinct_queries": len(queries),
     }
 

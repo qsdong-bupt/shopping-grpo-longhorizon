@@ -22,6 +22,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from shopping_grpo.environment.actions import RUNTIME_GUARD_FIELD  # noqa: E402
+from shopping_grpo.environment.protocol import (  # noqa: E402
+    message_protocol_problem, runtime_protocol,
+)
 from shopping_grpo.evaluation.rollout import STUDENT_SYSTEM_PROMPT  # noqa: E402
 from shopping_grpo.persona.render import render_persona  # noqa: E402
 
@@ -68,6 +71,11 @@ def admission_problem(trajectory):
             problem = tool_call_argument_problem(tool_call)
             if problem:
                 return f"invalid_arguments:{problem}"
+    if trajectory.get("runtime_protocol") != runtime_protocol():
+        return "protocol_mismatch"
+    problem = message_protocol_problem(trajectory.get("messages") or [])
+    if problem:
+        return problem
     return None
 
 
@@ -99,6 +107,9 @@ def admission_audit(trajectory):
 
 
 def build_sample(trajectory, task, persona_pool):
+    problem = message_protocol_problem(trajectory.get("messages") or [])
+    if problem:
+        raise ValueError(f"trajectory protocol mismatch: {problem}")
     # system 换 Student 版；画像按任务条件拼入
     system = STUDENT_SYSTEM_PROMPT
     if task.get("persona_ref"):
@@ -150,6 +161,7 @@ def build_sample(trajectory, task, persona_pool):
     total_chars = sum(len(str(m.get("content") or "")) for m in messages)
     return {
         "record_id": trajectory["meta"]["record_id"],
+        "runtime_protocol": runtime_protocol(),
         "teacher": trajectory["meta"].get("teacher"),
         "difficulty": trajectory["meta"].get("difficulty"),
         "persona_condition": trajectory["meta"].get("persona_condition"),
@@ -212,6 +224,8 @@ def main():
 
     chars = sorted(s["chars"] for s in samples)
     n = len(chars)
+    if not n:
+        raise SystemExit("No trajectories admitted for the current protocol; recollect demonstrations before building SFT data. Rejections: " + str(dict(rejected_admission)))
     stats = {
         "samples": n,
         "chars_p50": chars[n // 2],

@@ -86,7 +86,7 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
         {
             "PYTHONPATH": str(ROOT / "src"),
             "SHOPPING_GRPO_ROOT": str(ROOT),
-            "SHOPPING_ENVIRONMENT_VERSION": "shopsimulator-environment-v2.1",
+            "SHOPPING_ENVIRONMENT_VERSION": "shopsimulator-environment-v2.2",
             "SHOPPING_ENV_MANIFEST": str(DEFAULT_MANIFEST),
             "GRPO_MODEL_PATH": str(model),
             "GRPO_TRAIN_FILE": str(train_data),

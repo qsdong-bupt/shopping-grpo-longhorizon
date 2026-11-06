@@ -17,7 +17,6 @@ from web_agent_site.engine.engine import (
     parse_action,
     get_product_per_page,
     normalize_query,
-    ACTION_TO_TEMPLATE,
     PRODUCT_WINDOW,
     SEARCH_RETURN_N,
     END_BUTTON, NEXT_PAGE, PREV_PAGE, BACK_TO_SEARCH,
@@ -112,7 +111,6 @@ class WebAgentTextEnv(gym.Env):
         human_goals
         session
         session_prefix
-        show_attrs
         """
         super(WebAgentTextEnv, self).__init__()
         self.observation_mode = observation_mode
@@ -128,7 +126,6 @@ class WebAgentTextEnv(gym.Env):
             self.kwargs.get('limit_goals', -1),
             self.kwargs.get('num_products'),
             self.kwargs.get('human_goals'),
-            self.kwargs.get('show_attrs', False),
             self.kwargs.get('shuffle_goals', False),
             self.kwargs.get('shuffle_num', 20),
             self.kwargs.get('shift_goals', False),
@@ -412,7 +409,6 @@ class SimServer:
         limit_goals=-1,
         num_products=None,
         human_goals=0,
-        show_attrs=False,
         shuffle_goals=False,
         shuffle_num=20,
         shift_goals=False,
@@ -454,7 +450,6 @@ class SimServer:
             raise ValueError("search index weights differ from the config")
         self.existed_goals = True
         self.goals = get_goals(self.all_products, self.product_prices, if_persona=if_persona)
-        self.show_attrs = show_attrs
         self.shuffle_goals = shuffle_goals
         self.shuffle_num = shuffle_num
         self.shift_goals = shift_goals
@@ -634,7 +629,6 @@ class SimServer:
         )
         session["price_resolution"] = price_resolution
         session["selected_price"] = selected_price
-        session["subpage"] = None
         if session.get("asin"):
             eligibility = evaluate_candidate_eligibility(
                 product_info,
@@ -663,40 +657,7 @@ class SimServer:
             asin=session["asin"],
             options=session["options"],
             instruction_text=session["goal"]["instruction_text"],
-            show_attrs=self.show_attrs,
             selected_price=selected_price,    # 新增
-        )
-        return html, url
-
-    @app.route('/', methods=['GET', 'POST'])
-    def item_sub_page(self, session_id, **kwargs):
-        """Render and return the HTML for a product's sub page (i.e. description, features)"""
-        session = self.user_sessions[session_id]
-        clickable_name = kwargs['clickable_name']
-        for k in ACTION_TO_TEMPLATE:
-            if clickable_name.lower() == k.lower():
-                clickable_name = k
-                break
-
-        # Set fields + url of page, then render page's HTML
-        product_info = self.product_item_dict[session["asin"]]
-        session["subpage"] = clickable_name
-        session["actions"][clickable_name] += 1
-        keywords_url_string = '+'.join(session["keywords"])
-        url = (
-            f'{self.base_url}/item_sub_page/{session_id}/'
-            f'{session["asin"]}/{keywords_url_string}/{session["page"]}/'
-            f'{clickable_name}/{session["options"]}'
-        )
-        html = map_action_to_html(
-            f'click[{clickable_name}]',
-            session_id=session_id,
-            product_info=product_info,
-            keywords=session["keywords"],
-            page=session["page"],
-            asin=session["asin"],
-            options=session["options"],
-            instruction_text=session["goal"]["instruction_text"],
         )
         return html, url
 
@@ -746,7 +707,7 @@ class SimServer:
         page_name = self.get_page_name(current_url)
         if page_name == "search_results":
             return tuple(session.get("current_page_asins") or ())
-        if page_name in {"item_page", "item_sub_page"} and session.get("asin"):
+        if page_name == "item_page" and session.get("asin"):
             return (session["asin"],)
         return ()
 
@@ -861,7 +822,6 @@ class SimServer:
                         'total_pages': 0,
                         'options': dict(),
                         'selected_price': None,
-                        'subpage': None,
                         'price_resolution': None,
                         'candidate_eligibility': {},
                         'known_valid_asins': set(),
@@ -885,11 +845,6 @@ class SimServer:
                             product_open_progress_budget=int(
                                 self.environment_config["termination"][
                                     "product_open_progress_budget"
-                                ]
-                            ),
-                            subpage_progress_budget=int(
-                                self.environment_config["termination"][
-                                    "subpage_progress_budget"
                                 ]
                             ),
                             result_set_progress_budget=int(
@@ -933,7 +888,6 @@ class SimServer:
                             "options": {},
                             "selected_price": None,
                             "price_resolution": None,
-                            "subpage": None,
                         }
                     )
                 elif (clickable_name == NEXT_PAGE.lower() and
@@ -955,10 +909,6 @@ class SimServer:
                         page=session["page"] - 1,
                     )
                 elif (clickable_name == PREV_PAGE.lower() and
-                      self.get_page_name(current_url) == 'item_sub_page'):
-                    # If "prev page" clicked from sub page, return to corresponding item page
-                    html, url = self.item_page(session_id, **kwargs)
-                elif (clickable_name == PREV_PAGE.lower() and
                       self.get_page_name(current_url) == 'item_page'):
                     # If "prev page" clicked from item page, return to search results page
                     html, url = self.search_results(
@@ -967,9 +917,6 @@ class SimServer:
                         page=session["page"],
                         **kwargs
                     )
-                elif clickable_name in [k.lower() for k in ACTION_TO_TEMPLATE]:
-                    # Render item_sub_page if clickable is description, features, or reviews
-                    html, url = self.item_sub_page(session_id, **kwargs)
                 else:
                     # Otherwise, render current item page
                     html, url = self.item_page(session_id, **kwargs)
@@ -995,7 +942,6 @@ class SimServer:
         page_names = [
             'search_results',
             'item_page',
-            'item_sub_page',
             'done'
         ]
         for page_name in page_names:

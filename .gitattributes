@@ -1,0 +1,10 @@
+# Runtime manifests hash file bytes; keep those files identical across platforms.
+/src/shopping_grpo/environment/*.py text eol=lf
+/environments/ShopSimulator/shop_env/web_agent_site/engine/*.py text eol=lf
+/environments/ShopSimulator/shop_env/web_agent_site/envs/web_agent_text_env.py text eol=lf
+/environments/ShopSimulator/shop_env/web_agent_site/templates/item_page.html text eol=lf
+/environments/ShopSimulator/shop_env/shop_env/pack_api.py text eol=lf
+/environments/ShopSimulator/shop_env/shop_env/slot_lease_pool.py text eol=lf
+/environments/ShopSimulator/shop_env/configs/environment.json text eol=lf
+/data/environment.json text eol=lf
+/configs/tools.json text eol=lf

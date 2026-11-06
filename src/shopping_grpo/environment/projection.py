@@ -21,7 +21,7 @@ from shopping_grpo.environment.product_id import PRODUCT_ID_CAPTURE, is_product_
 
 FOOTER_MARKER = "\n\n搜索功能是否可用:"
 TRUNCATION_MARKER = "[TRUNCATED_BY_SHOPPING_PROJECTOR]"
-PROJECTION_CONTRACT_VERSION = "shopping-observation-v2"
+PROJECTION_CONTRACT_VERSION = "shopping-observation-v3"
 
 
 class ObservationProjectionError(RuntimeError):
@@ -60,6 +60,10 @@ def project_observation(
 ):
     """返回有 token 上限的 observation，并保证可见目标与动作守卫目标一致。"""
     observation = str(observation)
+    from shopping_grpo.environment.protocol import message_protocol_problem
+    problem = message_protocol_problem([{"content": observation}])
+    if problem:
+        raise ObservationProjectionError(f"observation protocol mismatch: {problem}")
     token_budget = int(token_budget)
     detail_token_budget = int(detail_token_budget)
     generic_token_budget = int(generic_token_budget)
@@ -89,6 +93,13 @@ def project_observation(
                 count_tokens=count_tokens,
                 token_budget=effective_budget,
                 search_top_k=search_top_k,
+            )
+        elif page_type == "product_detail" and "[SHOPPING_OBSERVATION_V3]" in observation:
+            # Every structured field is purchase evidence, including the model
+            # in the title. Never silently cut attributes, options or price.
+            raise ObservationProjectionError(
+                "complete product evidence exceeds the observation token budget; "
+                "increase observation_detail_token_budget"
             )
         else:
             visible = _project_generic_page(
@@ -147,7 +158,7 @@ def project_observation(
 
 def _page_type(observation):
     if (
-        "[SHOPPING_OBSERVATION_V2]" in observation
+        "[SHOPPING_OBSERVATION_V3]" in observation
         and "page_type: search_results" in observation
     ):
         return "search_results"
@@ -158,8 +169,6 @@ def _page_type(observation):
         return "product_detail"
     if "搜索功能是否可用: True" in observation:
         return "search_home"
-    if buttons and buttons <= {"back to search", "< prev"}:
-        return "information_subpage"
     return "generic"
 
 
@@ -172,7 +181,7 @@ def _project_search_results(
     search_top_k,
 ):
     """压缩搜索结果标题，但保留当前页的每一个候选 ASIN。"""
-    if "[SHOPPING_OBSERVATION_V2]" in observation:
+    if "[SHOPPING_OBSERVATION_V3]" in observation:
         return _project_structured_search_results(
             observation,
             count_tokens=count_tokens,

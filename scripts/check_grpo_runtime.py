@@ -26,6 +26,13 @@ TRANSFORMERS_MAX = "5.11"
 MAX_SAFE_RESPONSE_LENGTH = 20480
 MAX_SAFE_SEQUENCE_LENGTH = 24576
 CURRENT_RUNTIME_FILES = {
+    "tool_schema.py": "src/shopping_grpo/environment/tools.py",
+    "renderer.py": "src/shopping_grpo/environment/observation.py",
+    "projection.py": "src/shopping_grpo/environment/projection.py",
+    "item_page.html": "environments/ShopSimulator/shop_env/web_agent_site/templates/item_page.html",
+    "termination.py": "environments/ShopSimulator/shop_env/web_agent_site/engine/termination.py",
+    "engine.py": "environments/ShopSimulator/shop_env/web_agent_site/engine/engine.py",
+    "environment_config.json": "environments/ShopSimulator/shop_env/configs/environment.json",
     "observation.py": "environments/ShopSimulator/shop_env/web_agent_site/engine/observation.py",
     "pack_api.py": "environments/ShopSimulator/shop_env/shop_env/pack_api.py",
     "reward.py": "environments/ShopSimulator/shop_env/web_agent_site/engine/reward.py",
@@ -37,12 +44,12 @@ CURRENT_RUNTIME_FILES = {
 def validate_reward_runtime_files(manifest, root):
     if manifest.get("lease_contract") != "explicit-client-release-v1":
         raise SystemExit(
-            "Environment v2.1 manifest must select explicit-client-release-v1"
+            "Environment v2.2 manifest must select explicit-client-release-v1"
         )
     expected = manifest.get("runtime_files_sha256")
     if not isinstance(expected, dict) or set(expected) != set(CURRENT_RUNTIME_FILES):
         raise SystemExit(
-            "Environment v2.1 manifest runtime_files_sha256 is missing or incomplete"
+            "Environment v2.2 manifest runtime_files_sha256 is missing or incomplete"
         )
     from shopping_grpo.environment.manifest import sha256_file
 
@@ -53,7 +60,7 @@ def validate_reward_runtime_files(manifest, root):
             mismatches[name] = {"expected": expected[name], "actual": actual}
     if mismatches:
         raise SystemExit(
-            "Environment v2.1 runtime file hash mismatch: "
+            "Environment v2.2 runtime file hash mismatch: "
             + json.dumps(mismatches, sort_keys=True)
         )
 
@@ -61,11 +68,11 @@ def validate_reward_runtime_files(manifest, root):
 def validate_environment_contract():
     required_version = os.environ.get(
         "SHOPPING_ENVIRONMENT_VERSION",
-        "shopsimulator-environment-v2.1",
+        "shopsimulator-environment-v2.2",
     )
-    if required_version != "shopsimulator-environment-v2.1":
+    if required_version != "shopsimulator-environment-v2.2":
         raise SystemExit(
-            "this repository supports only shopsimulator-environment-v2.1"
+            "this repository supports only shopsimulator-environment-v2.2"
         )
     manifest_path = os.environ.get("SHOPPING_ENV_MANIFEST")
     if not manifest_path or not Path(manifest_path).is_file():
@@ -82,7 +89,7 @@ def validate_environment_contract():
         raise SystemExit(f"invalid {required_version} manifest: {exc}") from exc
     actual_environment_version = manifest.get(
         "environment_version",
-        "shopsimulator-environment-v2.1",
+        "shopsimulator-environment-v2.2",
     )
     if actual_environment_version != required_version:
         raise SystemExit(
@@ -97,12 +104,9 @@ def validate_environment_contract():
         )
     )
     tools = json.loads(tools_path.read_text(encoding="utf-8")).get("tools", [])
-    tool_names = {
-        item.get("tool_schema", {}).get("function", {}).get("name")
-        for item in tools
-    }
-    if "finish_without_purchase" not in tool_names:
-        raise SystemExit("Environment v2 tool config is missing finish_without_purchase")
+    from shopping_grpo.environment.tools import SHOP_TOOL_SCHEMAS
+    if [item.get("tool_schema") for item in tools] != SHOP_TOOL_SCHEMAS:
+        raise SystemExit("tool config differs from the current shopping tool schema")
     if int(manifest["max_steps"]) != 35:
         raise SystemExit("Environment v2 GRPO contract requires max_steps=35")
     validate_reward_runtime_files(
@@ -297,6 +301,24 @@ def validate_training_memory_budget(config):
     )
 
 
+def validate_grpo_data_protocol(paths):
+    import pandas as pd
+    from shopping_grpo.environment.protocol import message_protocol_problem, runtime_protocol
+    from shopping_grpo.evaluation.rollout import STUDENT_SYSTEM_PROMPT
+
+    for path in set(paths):
+        frame = pd.read_parquet(path, columns=["prompt", "extra_info"])
+        for index, row in frame.iterrows():
+            extra = row["extra_info"]
+            if extra.get("runtime_protocol") != runtime_protocol():
+                raise SystemExit(f"{path} row {index}: GRPO protocol mismatch; rebuild task parquet")
+            messages = list(row["prompt"])
+            problem = message_protocol_problem(messages)
+            system = next((m.get("content", "") for m in messages if m.get("role") == "system"), "")
+            if problem or not system.startswith(STUDENT_SYSTEM_PROMPT):
+                raise SystemExit(f"{path} row {index}: stale GRPO prompt; rebuild task parquet")
+
+
 def main():
     config = compose_runtime_config(sys.argv[1:])
     validate_environment_contract()
@@ -307,6 +329,7 @@ def main():
     missing = [name for name, value in required_paths.items() if not value or not Path(value).is_file()]
     if missing:
         raise SystemExit("missing GRPO parquet file(s): " + ", ".join(missing))
+    validate_grpo_data_protocol(required_paths.values())
     validate_training_memory_budget(config)
 
     if sys.version_info[:2] != (3, 12):

@@ -51,7 +51,7 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
             def reset(self, task_id):
                 return {
                     "instruction": f"task {task_id}",
-                    "environment_version": "shopsimulator-environment-v2.1",
+                    "environment_version": "shopsimulator-environment-v2.2",
                 }
 
             def release(self):
@@ -103,7 +103,7 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
             loop.base_url = "http://shop.test"
             loop.timeout = 60
             loop.max_steps = 35
-            loop.required_environment_version = "shopsimulator-environment-v2.1"
+            loop.required_environment_version = "shopsimulator-environment-v2.2"
             loop.reward_mode = "constraint_aware"
             loop.env_factory = FakeEnv
             with patch.object(ToolAgentLoop, "run", fake_parent_run):
@@ -500,7 +500,7 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
 
         async def run():
             session = ShopSimulatorSession(
-                required_environment_version="shopsimulator-environment-v2.1",
+                required_environment_version="shopsimulator-environment-v2.2",
                 env_factory=FakeEnv,
             )
             with self.assertRaisesRegex(RuntimeError, "version mismatch"):
@@ -553,12 +553,12 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
 
 
 class RewardV4ExplorationTest(unittest.TestCase):
-    """v4：买错细分（探索充分度 0-3 → 尽力 -0.45 / 草率 -1.00）。"""
+    """v4：买错细分（探索充分度 0-2 → 尽力 -0.45 / 草率 -1.00）。"""
 
     def _step(self, tool, **params):
         return {"tool": tool, "parameters": params}
 
-    def test_full_exploration_scores_three(self):
+    def test_full_exploration_scores_two(self):
         from shopping_grpo.training.grpo.adapter.runtime import exploration_score
 
         state = {"steps": [
@@ -566,14 +566,12 @@ class RewardV4ExplorationTest(unittest.TestCase):
             self._step("search_products", query="红酒 婚庆"),
             self._step("open_product", asin="A1"),
             self._step("open_product", asin="A2"),
-            self._step("view_features"),
             self._step("buy_now", asin="A2"),
         ]}
         score, detail = exploration_score(state)
-        self.assertEqual(score, 3)
+        self.assertEqual(score, 2)
         self.assertEqual(detail["opened_candidates"], 2)
         self.assertEqual(detail["distinct_queries"], 2)
-        self.assertTrue(detail["verified_information_page"])
 
     def test_careless_scores_zero(self):
         from shopping_grpo.training.grpo.adapter.runtime import exploration_score
@@ -605,12 +603,12 @@ class RewardV4ExplorationTest(unittest.TestCase):
             EXPLORATION_SUFFICIENT_SCORE, exploration_score,
         )
 
-        # 比较 + 核验 = 2 分 → 尽力档
+        # 比较 + 不同搜索 = 2 分 → 尽力档
         state = {"steps": [
             self._step("search_products", query="红酒"),
             self._step("open_product", asin="A1"),
             self._step("open_product", asin="A2"),
-            self._step("view_reviews"),
+            self._step("search_products", query="红酒 礼盒"),
         ]}
         score, _ = exploration_score(state)
         self.assertEqual(score, EXPLORATION_SUFFICIENT_SCORE)

@@ -3,7 +3,6 @@ import unittest
 from shopping_grpo.environment.actions import (
     action_reject_reason,
     product_ids,
-    subpage_visit_key,
 )
 
 
@@ -23,9 +22,9 @@ class ActionValidationTest(unittest.TestCase):
 
     def test_post_selection_allows_current_page_navigation(self):
         """规格选择不改变环境的可用动作；只校验当前页面是否真的有按钮。"""
-        observation = '商品页\n\n可点击的按钮: ["Description", "Buy Now"]'
+        observation = '商品页\n\n可点击的按钮: ["back to search", "Buy Now"]'
 
-        reason = action_reject_reason("view_description", {}, observation)
+        reason = action_reject_reason("back_to_search", {}, observation)
 
         self.assertIsNone(reason)
 
@@ -47,7 +46,7 @@ class ActionValidationTest(unittest.TestCase):
     def test_structured_observation_accepts_real_eleven_digit_product_id(self):
         asin = "35842622441"
         observation = (
-            "[SHOPPING_OBSERVATION_V2]\n"
+            "[SHOPPING_OBSERVATION_V3]\n"
             "1|35842622441|158.0|泰国乳胶枕\n"
             '可点击的按钮: ["back to search", "35842622441"]'
         )
@@ -63,43 +62,9 @@ class ActionValidationTest(unittest.TestCase):
         )
         self.assertEqual(product_ids(observation), [])
 
-    def test_subpage_repeated_visit_is_rejected(self):
-        """同一商品同一子页第二次访问被守卫拒绝。"""
-        observation = (
-            "[SHOPPING_OBSERVATION_V2]\n"
-            "page_type: product_detail\n"
-            "asin: 747848614498\n"
-            "title: 测试商品\n"
-            '可点击的按钮: ["back to search", "description", "buy now"]'
-        )
-        self.assertIsNone(
-            action_reject_reason("view_description", {}, observation)
-        )
-        self.assertIsNone(
-            action_reject_reason(
-                "view_description",
-                {},
-                observation,
-                visited_subpages={("747848614498", "Features")},
-            )
-        )
-        self.assertEqual(
-            action_reject_reason(
-                "view_description",
-                {},
-                observation,
-                visited_subpages={("747848614498", "Description")},
-            ),
-            "subpage_already_visited",
-        )
-
-    def test_subpage_key_extracts_asin_from_detail_page(self):
-        observation = "asin: 747848614498\ntitle: 测试商品\n"
-        self.assertEqual(
-            subpage_visit_key("view_reviews", observation),
-            ("747848614498", "Reviews"),
-        )
-        self.assertIsNone(subpage_visit_key("buy_now", observation))
+    def test_retired_tools_are_rejected(self):
+        for name in ("view_description", "view_features", "view_reviews", "view_attributes"):
+            self.assertEqual(action_reject_reason(name, {}, ""), "unknown_or_invalid_tool")
 
 
 if __name__ == "__main__":

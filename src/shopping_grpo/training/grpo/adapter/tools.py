@@ -7,7 +7,7 @@ import math
 from typing import Any
 from uuid import uuid4
 
-from shopping_grpo.environment.actions import action_reject_reason, subpage_visit_key
+from shopping_grpo.environment.actions import action_reject_reason
 from shopping_grpo.environment.tools import tool_call_to_action
 from shopping_grpo.environment.observation import render_structured_observation
 from shopping_grpo.training.grpo.adapter.runtime import (
@@ -66,7 +66,6 @@ class ShopSimulatorTool(BaseTool):
             self.name,
             parameters,
             observation,
-            visited_subpages=state.get("visited_subpages"),
         )
         if reason:
             state["guard_rejection_count"] += 1
@@ -82,8 +81,6 @@ class ShopSimulatorTool(BaseTool):
                     "reason": reason
                 }
             return ToolResponse(text=f"Error: action guard rejected this call ({reason}); read the latest observation."), 0.0, {"reason": reason}
-        # 子页去重键在执行前从当前（详情页）observation 提取。
-        subpage_key = subpage_visit_key(self.name, observation)
         try:
             # 先转换成环境动作，再在线程中调用同步客户端；终局 reward 只信任
             # 环境返回的 Reward v3 结构，避免训练侧自行猜测分数。
@@ -104,8 +101,6 @@ class ShopSimulatorTool(BaseTool):
                 done=bool(result.get("done", False)),
                 reward=float(result.get("reward", 0.0)),
             )
-            if subpage_key is not None:
-                state["visited_subpages"].add(subpage_key)
         except Exception as exc:
             _terminate(
                 state,

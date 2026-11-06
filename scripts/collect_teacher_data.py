@@ -34,6 +34,7 @@ from shopping_grpo.evaluation.rollout import (  # noqa: E402
     collect_for_task,
 )
 from shopping_grpo.persona.render import render_persona  # noqa: E402
+from shopping_grpo.environment.protocol import runtime_protocol  # noqa: E402
 
 OUT = ROOT / "outputs/collection"
 TRAJ = OUT / "trajectories"
@@ -54,6 +55,18 @@ def load_env_file(path: Path) -> None:
             os.environ[key.strip()] = value.strip()
 
 
+def collection_completed_ids():
+    done = set()
+    for status_path in sorted(OUT.glob("task_status_*.jsonl")):
+        for line in status_path.open(encoding="utf-8"):
+            row = json.loads(line)
+            if row.get("runtime_protocol") != runtime_protocol():
+                raise ValueError("Teacher collection protocol mismatch; move old collection outputs out of the active directory before recollecting")
+            if row.get("final") in {"accepted", "teacher_hard", "env_exhausted"}:
+                done.add(row["record_id"])
+    return done
+
+
 def pick_tasks(limit, shard=0, shards=1):
     tasks = [json.loads(l) for l in (ROOT / "outputs/split/tasks_final.jsonl").open()]
     pool = sorted(
@@ -62,12 +75,7 @@ def pick_tasks(limit, shard=0, shards=1):
     )
     # 按 record_id 稳定分片：同一个任务永远落在同一个分片，双 Teacher 不重叠。
     pool = pool[shard::shards]
-    done = set()
-    for status_path in sorted(OUT.glob("task_status_*.jsonl")):
-        for line in status_path.open(encoding="utf-8"):
-            row = json.loads(line)
-            if row.get("final") in {"accepted", "teacher_hard", "env_exhausted"}:
-                done.add(row["record_id"])
+    done = collection_completed_ids()
     remaining = [t for t in pool if t["record_id"] not in done]
     # 难度分层：hard 至少 30%，其余近似源分布
     by_diff = defaultdict(list)
@@ -292,6 +300,7 @@ def main():
                    for t in selected}
         for future in as_completed(futures):
             result = future.result()
+            result["runtime_protocol"] = runtime_protocol()
             with write_lock:
                 status_path = OUT / f"task_status_{args.teacher}.jsonl"
                 with status_path.open("a", encoding="utf-8") as f:

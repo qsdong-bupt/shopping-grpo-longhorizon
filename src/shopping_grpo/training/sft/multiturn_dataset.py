@@ -20,6 +20,8 @@ import pandas as pd
 import torch
 from omegaconf import DictConfig, ListConfig
 from torch.utils.data import Dataset
+from shopping_grpo.environment.protocol import message_protocol_problem, runtime_protocol
+from shopping_grpo.environment.tools import SHOP_TOOL_SCHEMAS
 
 
 class ShoppingMultiTurnSFTDataset(Dataset):
@@ -79,6 +81,9 @@ class ShoppingMultiTurnSFTDataset(Dataset):
     def _load_row(self, index):
         from verl.utils.py_functional import convert_nested_value_to_list_recursive
         row = self.dataframe.iloc[index]
+        recorded = row.get("runtime_protocol")
+        if not isinstance(recorded, str) or json.loads(recorded) != runtime_protocol():
+            raise ValueError("SFT runtime protocol mismatch; regenerate the dataset")
         messages = self._normalize_messages(
             convert_nested_value_to_list_recursive(row[self.messages_key]))
         tools = None
@@ -95,6 +100,11 @@ class ShoppingMultiTurnSFTDataset(Dataset):
                     properties = parameters.get("properties")
                     if isinstance(properties, list):
                         parameters["properties"] = dict(properties)
+        if tools != SHOP_TOOL_SCHEMAS:
+            raise ValueError("SFT tool schema mismatch; regenerate the dataset")
+        problem = message_protocol_problem(messages)
+        if problem:
+            raise ValueError(f"SFT message protocol mismatch: {problem}")
         enable_thinking = None
         if self.enable_thinking_key in self.dataframe.columns:
             value = row[self.enable_thinking_key]

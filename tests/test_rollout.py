@@ -7,6 +7,7 @@ from urllib.error import URLError
 from unittest.mock import patch
 
 from shopping_grpo.environment.actions import action_guard_tool_message
+from shopping_grpo.environment.protocol import runtime_protocol
 from shopping_grpo.environment.client import ShopEnvironmentError
 from shopping_grpo.evaluation.rollout import (
     CollectionInfrastructureError,
@@ -34,7 +35,7 @@ class FakeEnv:
         if action == "search[乳胶枕]":
             return {
                 "instruction": (
-                    "[SHOPPING_OBSERVATION_V2]\n"
+                    "[SHOPPING_OBSERVATION_V3]\n"
                     "page_type: search_results\n"
                     "1|100000000001|999.0|测试店|测试类|attr|测试商品\n"
                     "\n"
@@ -93,7 +94,7 @@ class GuardRecoveryEnv(FakeEnv):
         if action == "search[乳胶枕]":
             return {
                 "instruction": (
-                    "[SHOPPING_OBSERVATION_V2]\n"
+                    "[SHOPPING_OBSERVATION_V3]\n"
                     "page_type: search_results\n"
                     "1|100000000001|999.0|测试店|测试类|attr|测试商品\n"
                     "\n"
@@ -105,19 +106,13 @@ class GuardRecoveryEnv(FakeEnv):
             }
         if action == "click[100000000001]":
             return {
-                "instruction": 'detail\n\n可点击的按钮: ["Features", "Buy Now"]',
+                "instruction": 'detail\n\n可点击的按钮: ["back to search", "Buy Now"]',
                 "reward": 0.0,
                 "done": False,
             }
-        if action == "click[Features]":
+        if action == "click[Back to Search]":
             return {
-                "instruction": 'features\n\n可点击的按钮: ["< Prev"]',
-                "reward": 0.0,
-                "done": False,
-            }
-        if action == "click[< Prev]":
-            return {
-                "instruction": 'detail\n\n可点击的按钮: ["Features", "Buy Now"]',
+                "instruction": '[SHOPPING_OBSERVATION_V3]\npage_type: search_results\n1|100000000001|999.0|测试商品\n\n可点击的按钮: ["100000000001"]',
                 "reward": 0.0,
                 "done": False,
             }
@@ -164,8 +159,7 @@ class RolloutTest(unittest.TestCase):
         self.assertIn("不得向用户追问", SYSTEM_PROMPT)
         self.assertIn("不要在任务结束前输出最终答复", SYSTEM_PROMPT)
         self.assertIn("当前页面是动作合法性的唯一依据", SYSTEM_PROMPT)
-        self.assertIn("信息子页", SYSTEM_PROMPT)
-        self.assertIn("必须先调用当前页面可见的 `prev_page` 或 `back_to_search` 返回", SYSTEM_PROMPT)
+        self.assertNotIn("信息子页", SYSTEM_PROMPT)
         self.assertIn("无参数工具", SYSTEM_PROMPT)
         self.assertIn("历史 observation 可用于记住和比较候选", SYSTEM_PROMPT)
         self.assertIn("不能直接点击历史页面中的 ASIN", SYSTEM_PROMPT)
@@ -187,21 +181,21 @@ class RolloutTest(unittest.TestCase):
         self.assertIn("多次有实质差异的搜索和多个候选核验", TEACHER_SYSTEM_PROMPT)
         self.assertIn("是否达到结束资格由环境判断", TEACHER_SYSTEM_PROMPT)
         self.assertIn("不要连续重复同一动作", TEACHER_SYSTEM_PROMPT)
-        self.assertIn("同一商品的同一信息子页只需查看一次", TEACHER_SYSTEM_PROMPT)
+        self.assertIn("完整属性", TEACHER_SYSTEM_PROMPT)
         self.assertIn("回到已核验的最优候选完成购买", TEACHER_SYSTEM_PROMPT)
         self.assertNotIn("Reviews", TEACHER_SYSTEM_PROMPT)
         self.assertNotIn("Reviews", SYSTEM_PROMPT)
 
-    def test_guard_gives_a_return_only_instruction_on_information_subpage(self):
-        """子页误操作后，守卫应明确引导模型先返回，不重复猜测按钮。"""
+    def test_guard_lists_only_current_page_targets(self):
+        """守卫反馈只提供当前页面目标。"""
         message = action_guard_tool_message(
-            assistant_tool("view_attributes", {}, "call_attributes"),
+            assistant_tool("buy_now", {}, "call_buy"),
             "click_not_in_previous_observation",
             '详情页内容\n\n可点击的按钮: ["< Prev"]',
         )
 
-        self.assertIn("你处于信息子页", message["content"])
-        self.assertIn("prev_page", message["content"])
+        self.assertNotIn("你处于信息子页", message["content"])
+        self.assertIn("< Prev", message["content"])
         self.assertIn("不要重复使用历史页面目标", message["content"])
 
     def test_collect_for_task_executes_openai_tool_calls_until_done(self):
@@ -235,7 +229,7 @@ class RolloutTest(unittest.TestCase):
         class EnvironmentV21(FakeEnv):
             def reset(self, task_id):
                 result = super().reset(task_id)
-                result["environment_version"] = "shopsimulator-environment-v2.1"
+                result["environment_version"] = "shopsimulator-environment-v2.2"
                 return result
 
         client = MockClient([{"role": "assistant", "content": "stop"}])
@@ -279,7 +273,7 @@ class RolloutTest(unittest.TestCase):
         self.assertEqual(traj["status"], "done")
         self.assertEqual(env.actions, ["search[乳胶枕]", "click[100000000001]", "click[Buy Now]"])
         self.assertEqual(len(traj["blocked_tool_calls"]), 1)
-        self.assertEqual(traj["blocked_tool_calls"][0]["reason"], "click_not_in_previous_observation")
+        self.assertEqual(traj["blocked_tool_calls"][0]["reason"], "unknown_or_invalid_tool")
         self.assertNotIn(
             "view_features",
             [step["tool_name"] for step in traj["steps"]],
@@ -299,22 +293,22 @@ class RolloutTest(unittest.TestCase):
             def step(self, action):
                 self.actions.append(action)
                 if action == "search[乳胶枕]":
-                    return {"instruction": "[SHOPPING_OBSERVATION_V2]\npage_type: search_results\n1|100000000001|999.0|测试店|测试类|attr|测试商品\n\n搜索功能是否可用: True\n可点击的按钮: [\"100000000001\"]", "reward": 0.0, "done": False}
+                    return {"instruction": "[SHOPPING_OBSERVATION_V3]\npage_type: search_results\n1|100000000001|999.0|测试店|测试类|attr|测试商品\n\n搜索功能是否可用: True\n可点击的按钮: [\"100000000001\"]", "reward": 0.0, "done": False}
                 if action == "click[100000000001]":
                     return {
-                        "instruction": 'detail\n\n可点击的按钮: ["满天星", "Description", "Buy Now"]',
+                        "instruction": 'detail\n\n可点击的按钮: ["满天星", "back to search", "Buy Now"]',
                         "reward": 0.0,
                         "done": False,
                     }
                 if action == "click[满天星]":
                     return {
-                        "instruction": 'selected\n\n可点击的按钮: ["Description", "Buy Now"]',
+                        "instruction": 'selected\n\n可点击的按钮: ["back to search", "Buy Now"]',
                         "reward": 0.0,
                         "done": False,
                     }
-                if action == "click[Description]":
+                if action == "click[Back to Search]":
                     return {
-                        "instruction": 'details\n\n可点击的按钮: ["Buy Now"]',
+                        "instruction": '[SHOPPING_OBSERVATION_V3]\npage_type: search_results\n1|100000000001|999.0|测试商品\n\n可点击的按钮: ["100000000001"]',
                         "reward": 0.0,
                         "done": False,
                     }
@@ -334,7 +328,8 @@ class RolloutTest(unittest.TestCase):
                 assistant_tool("search_products", {"query": "乳胶枕"}, "call_search"),
                 assistant_tool("open_product", {"asin": "100000000001"}, "call_open"),
                 assistant_tool("select_option", {"value": "满天星"}, "call_option"),
-                assistant_tool("view_description", {}, "call_wrong_navigation"),
+                assistant_tool("back_to_search", {}, "call_navigation"),
+                assistant_tool("open_product", {"asin": "100000000001"}, "call_reopen"),
                 assistant_tool("buy_now", {}, "call_buy"),
             ]
         )
@@ -347,7 +342,8 @@ class RolloutTest(unittest.TestCase):
             "search[乳胶枕]",
             "click[100000000001]",
             "click[满天星]",
-            "click[Description]",
+            "click[Back to Search]",
+            "click[100000000001]",
             "click[Buy Now]",
         ])
         self.assertEqual(traj["blocked_tool_calls"], [])
@@ -358,7 +354,7 @@ class RolloutTest(unittest.TestCase):
             def step(self, action):
                 self.actions.append(action)
                 if action == "search[乳胶枕]":
-                    return {"instruction": "[SHOPPING_OBSERVATION_V2]\npage_type: search_results\n1|100000000001|999.0|测试店|测试类|attr|测试商品\n\n搜索功能是否可用: True\n可点击的按钮: [\"100000000001\"]", "reward": 0.0, "done": False}
+                    return {"instruction": "[SHOPPING_OBSERVATION_V3]\npage_type: search_results\n1|100000000001|999.0|测试店|测试类|attr|测试商品\n\n搜索功能是否可用: True\n可点击的按钮: [\"100000000001\"]", "reward": 0.0, "done": False}
                 if action == "click[100000000001]":
                     return {
                         "instruction": 'detail\n\n可点击的按钮: ["满天星", "Buy Now"]',
@@ -399,7 +395,7 @@ class RolloutTest(unittest.TestCase):
         exposed_after_selection = [
             schema["function"]["name"] for schema in client.requests[3]["tools"]
         ]
-        self.assertIn("view_description", exposed_after_selection)
+        self.assertNotIn("view_description", exposed_after_selection)
         self.assertIn("search_products", exposed_after_selection)
 
     def test_collect_for_task_allows_recovery_after_separated_guard_rejections(self):
@@ -409,10 +405,10 @@ class RolloutTest(unittest.TestCase):
                 assistant_tool("search_products", {"query": "乳胶枕"}, "call_search"),
                 assistant_tool("open_product", {"asin": "999999999999"}, "call_old_asin"),
                 assistant_tool("open_product", {"asin": "100000000001"}, "call_open"),
-                assistant_tool("view_attributes", {}, "call_missing_attributes"),
-                assistant_tool("view_features", {}, "call_features"),
+                assistant_tool("next_page", {}, "call_missing_next"),
+                assistant_tool("back_to_search", {}, "call_back"),
                 assistant_tool("buy_now", {}, "call_buy_on_subpage"),
-                assistant_tool("prev_page", {}, "call_return"),
+                assistant_tool("open_product", {"asin": "100000000001"}, "call_return"),
                 assistant_tool("buy_now", {}, "call_buy"),
             ]
         )
@@ -431,8 +427,8 @@ class RolloutTest(unittest.TestCase):
         self.assertEqual(env.actions, [
             "search[乳胶枕]",
             "click[100000000001]",
-            "click[Features]",
-            "click[< Prev]",
+            "click[Back to Search]",
+            "click[100000000001]",
             "click[Buy Now]",
         ])
 
@@ -461,8 +457,8 @@ class RolloutTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             output = Path(tmpdir) / "raw.jsonl"
             output.write_text(
-                json.dumps({"task_id": 1, "trajectory_id": "old"}) + "\n"
-                + json.dumps({"task_id": 3, "trajectory_id": "old2"}) + "\n",
+                json.dumps({"task_id": 1, "trajectory_id": "old", "runtime_protocol": runtime_protocol()}) + "\n"
+                + json.dumps({"task_id": 3, "trajectory_id": "old2", "runtime_protocol": runtime_protocol()}) + "\n",
                 encoding="utf-8",
             )
 
@@ -471,7 +467,7 @@ class RolloutTest(unittest.TestCase):
     def test_collect_tasks_skips_existing_output_rows(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output = Path(tmpdir) / "raw.jsonl"
-            output.write_text(json.dumps({"task_id": 1, "trajectory_id": "old"}) + "\n")
+            output.write_text(json.dumps({"task_id": 1, "trajectory_id": "old", "runtime_protocol": runtime_protocol()}) + "\n", encoding="utf-8")
             client = MockClient([assistant_tool("buy_now", {}, "call_buy")])
 
             written = collect_tasks(
@@ -482,7 +478,7 @@ class RolloutTest(unittest.TestCase):
                 max_steps=1,
                 env_factory=FakeEnv,
             )
-            rows = [json.loads(line) for line in output.read_text().splitlines()]
+            rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
 
         self.assertEqual([row["task_id"] for row in rows], [1, 2])
         self.assertEqual(len(written), 1)
@@ -491,7 +487,7 @@ class RolloutTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             output = Path(tmpdir) / "raw.jsonl"
             output.write_text(
-                json.dumps({"task_id": 1, "attempt_index": 0, "trajectory_id": "old"}) + "\n",
+                json.dumps({"task_id": 1, "attempt_index": 0, "trajectory_id": "old", "runtime_protocol": runtime_protocol()}) + "\n",
                 encoding="utf-8",
             )
             client = MockClient(
@@ -808,7 +804,7 @@ class RolloutTest(unittest.TestCase):
             + '\n\n可点击的按钮: ["back to search", "< prev"]'
         )
 
-        visible, meta = client.project_observation("view_description", raw, {})
+        visible, meta = client.project_observation("prev_page", raw, {})
 
         self.assertLessEqual(len(visible), 128)
         self.assertTrue(meta["truncated"])

@@ -43,7 +43,6 @@ weights = None
 
 user_sessions = dict()
 user_log_dir = None
-SHOW_ATTRS_TAB = False
 
 @app.route('/')
 def home():
@@ -166,47 +165,10 @@ def item_page(session_id, asin, keywords, page, options):
         asin=asin,
         options=options,
         instruction_text=goal_instruction,
-        show_attrs=SHOW_ATTRS_TAB,
     )
     logger = logging.getLogger(session_id)
     logger.info(json.dumps(dict(
         page='item_page',
-        url=request.url,
-        goal=user_sessions[session_id]['goal'],
-        content=dict(
-            keywords=keywords,
-            page=page,
-            asin=asin,
-            options=options,
-        )
-    )))
-    return html
-
-
-@app.route(
-    '/item_sub_page/<session_id>/<asin>/<keywords>/<page>/<sub_page>/<options>',
-    methods=['GET', 'POST']
-)
-def item_sub_page(session_id, asin, keywords, page, sub_page, options):
-    options = literal_eval(options)
-    product_info = product_item_dict[asin]
-
-    goal_instruction = user_sessions[session_id]['goal']['instruction_text']
-    product_info['goal_instruction'] = goal_instruction
-
-    html = map_action_to_html(
-        f'click[{sub_page}]',
-        session_id=session_id,
-        product_info=product_info,
-        keywords=keywords,
-        page=page,
-        asin=asin,
-        options=options,
-        instruction_text=goal_instruction
-    )
-    logger = logging.getLogger(session_id)
-    logger.info(json.dumps(dict(
-        page='item_sub_page',
         url=request.url,
         goal=user_sessions[session_id]['goal'],
         content=dict(
@@ -276,12 +238,10 @@ def done(session_id, asin, options):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="WebShop flask app backend configuration")
     parser.add_argument("--log", action='store_true', help="Log actions on WebShop in trajectory file")
-    parser.add_argument("--attrs", action='store_true', help="Show attributes tab in item page")
 
     args = parser.parse_args()
     if args.log:
         user_log_dir = Path('user_session_logs/mturk')
         user_log_dir.mkdir(parents=True, exist_ok=True)
-    SHOW_ATTRS_TAB = args.attrs
 
     app.run(host='0.0.0.0', port=7000)

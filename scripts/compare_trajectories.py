@@ -18,7 +18,7 @@ from shopping_grpo.evaluation.trajectory import normalize_trajectory  # noqa: E4
 BEHAVIOR_FIELDS = {
     "actions": [
         "executed_tool_steps", "action_attempts", "search_count", "open_product_count",
-        "opened_candidate_count", "information_page_count", "select_option_count",
+        "opened_candidate_count", "select_option_count",
         "buy_count", "finish_without_purchase_count",
     ],
     "repetition": [

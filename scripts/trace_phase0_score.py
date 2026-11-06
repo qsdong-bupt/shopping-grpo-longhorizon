@@ -30,8 +30,7 @@ REWARD_BY_TYPE = {
     "wrong_purchase": -1.0,
 }
 
-EXPLORE_TOOLS = {"open_product", "view_description", "view_features", "view_reviews",
-                 "view_attributes", "next_page", "prev_page", "search_products"}
+EXPLORE_TOOLS = {"open_product", "next_page", "prev_page", "search_products"}
 
 
 def _fix_tool_args(messages):

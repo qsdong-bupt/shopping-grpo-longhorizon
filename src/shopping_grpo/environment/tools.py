@@ -4,13 +4,11 @@
 转换成环境 ``search[...]``/``click[...]``/``finish[...]`` 动作的映射。
 """
 
+TOOL_VERSION = "shopping-tools-v3"
+
 CLICK_TOOL_ACTIONS = {
     "open_product": ("asin", None),
     "select_option": ("value", None),
-    "view_description": (None, "Description"),
-    "view_features": (None, "Features"),
-    "view_reviews": (None, "Reviews"),
-    "view_attributes": (None, "Attributes"),
     "next_page": (None, "Next >"),
     "prev_page": (None, "< Prev"),
     "back_to_search": (None, "Back to Search"),
@@ -72,10 +70,6 @@ _INTERACTION_TOOL_SCHEMAS = [
         {"value": {"type": "string"}},
         ["value"],
     ),
-    _schema("view_description", "仅当当前页面显示 Description 按钮且需要补充核验商品时打开；无参数，必须传 {}。"),
-    _schema("view_features", "仅当当前页面显示 Features 按钮且需要核验核心功能时打开；无参数，必须传 {}。"),
-    _schema("view_reviews", "仅当当前页面显示 Reviews 按钮且需要补充判断时打开；无参数，必须传 {}。"),
-    _schema("view_attributes", "仅当当前页面显示 Attributes 按钮且需要核验关键属性时打开；无参数，必须传 {}。"),
     _schema("next_page", "仅当当前页面显示 Next > 且当前页没有合适候选时翻到下一页以发现新商品；无参数，必须传 {}。"),
     _schema("prev_page", "仅当当前页面显示 < Prev 按钮时返回上一页；无参数，必须传 {}。"),
     _schema("back_to_search", "仅当当前页面显示 Back to Search 按钮时返回搜索页；无参数，必须传 {}。"),

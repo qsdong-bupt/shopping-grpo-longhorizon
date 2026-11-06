@@ -8,8 +8,7 @@ from pathlib import Path
 
 ROOT = Path("/data/jyh-yyh/shopping-grpo-longhorizon")
 
-EXPLORE = {"open_product", "view_description", "view_features", "view_reviews",
-           "view_attributes", "next_page", "prev_page", "search_products"}
+EXPLORE = {"open_product", "next_page", "prev_page", "search_products"}
 TERMINAL = {"buy_now", "finish_without_purchase"}
 
 
