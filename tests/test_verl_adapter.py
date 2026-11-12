@@ -51,7 +51,7 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
             def reset(self, task_id):
                 return {
                     "instruction": f"task {task_id}",
-                    "environment_version": "shopsimulator-environment-v2.1",
+                    "environment_version": "shopsimulator-environment-v2.2",
                 }
 
             def release(self):
@@ -86,7 +86,7 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
                             "reward": 0.0,
                         }
                     ],
-                    "guard_rejection_reason_counts": {"asin_not_visible": 2},
+                    "guard_rejection_reason_counts": {"click_not_in_previous_observation": 2},
                 }
             )
             return AgentLoopOutput(
@@ -103,7 +103,7 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
             loop.base_url = "http://shop.test"
             loop.timeout = 60
             loop.max_steps = 35
-            loop.required_environment_version = "shopsimulator-environment-v2.1"
+            loop.required_environment_version = "shopsimulator-environment-v2.2"
             loop.reward_mode = "constraint_aware"
             loop.env_factory = FakeEnv
             with patch.object(ToolAgentLoop, "run", fake_parent_run):
@@ -136,7 +136,7 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
         )
         self.assertEqual(
             output.extra_fields["shopping"]["guard_rejection_reasons"],
-            {"asin_not_visible": 2},
+            {"click_not_in_previous_observation": 2},
         )
         self.assertTrue(created[0].released)
 
@@ -171,7 +171,7 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
     def test_runtime_state_has_no_hidden_goal_fields(self):
         state = make_runtime_state(task_id=2, max_steps=35)
         self.assertNotIn("goal", state)
-        self.assertNotIn("reward_detail", state)
+        
 
     def test_task_id_is_read_from_verl_extra_info(self):
         self.assertEqual(task_id_from_kwargs({"extra_info": {"task_id": 42}}), 42)
@@ -216,7 +216,7 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
             self.assertTrue(state["terminate"])
             self.assertEqual(state["terminal_result"], {"done": True, "over": True})
             self.assertTrue(state["infrastructure_invalid"])
-            self.assertIsNone(state["reward_components"])
+            self.assertIsNone(state["reward_detail"])
             self.assertNotIn("hidden", str(state))
 
         asyncio.run(run())
@@ -231,10 +231,14 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
                     "reward": 0.6,
                     "goal": {"secret": True},
                     "reward_detail": {
-                        "r_type": 1,
-                        "r_att": 1,
-                        "r_option": 0.5,
-                        "r_price": 1,
+                        "reward_version": "shopsimulator-reward-v3",
+                        "reward_type": "partial_alternative_purchase",
+                        "termination_reason": "partial_alternative_purchase",
+                        "reward_valid": True,
+                        "terminal_utility": 0.6,
+                        "purchase_success": True,
+                        "sampling_invalid": False,
+                        "hard_gates": {},
                         "hidden_answer": "do not retain",
                     },
                 }
@@ -255,9 +259,8 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
             self.assertEqual(response.text, "Environment terminated.")
             self.assertFalse(state["infrastructure_invalid"])
             self.assertEqual(
-                state["reward_components"],
-                {"r_type": 1.0, "r_att": 1.0, "r_option": 0.5, "r_price": 1.0},
-            )
+                state["reward_type"], "partial_alternative_purchase")
+            self.assertTrue(state["reward_valid"])
             self.assertNotIn("hidden", str(state))
 
         asyncio.run(run())
@@ -396,23 +399,6 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
 
         asyncio.run(run())
 
-    def test_think_consumes_the_step_budget_and_terminates_at_the_exact_limit(self):
-        async def run():
-            state = make_runtime_state(task_id=2, max_steps=1)
-            env_token = current_environment.set(object())
-            state_token = current_runtime_state.set(state)
-            try:
-                response, _, _ = await make_tool("think").execute("tool-1", {"note": "plan"})
-            finally:
-                current_runtime_state.reset(state_token)
-                current_environment.reset(env_token)
-            self.assertEqual(len(state["steps"]), 1)
-            self.assertTrue(state["terminate"])
-            self.assertEqual(state["error"], "max_steps")
-            self.assertIn("maximum", response.text)
-
-        asyncio.run(run())
-
     def test_repeated_guard_rejections_terminate_instead_of_looping_forever(self):
         async def run():
             state = make_runtime_state(task_id=2, max_steps=35)
@@ -437,7 +423,7 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
             self.assertEqual(state["action_attempt_after_truncation_count"], 3)
             self.assertEqual(
                 state["guard_rejection_reason_counts"],
-                {"asin_not_visible": 3},
+                {"click_not_in_previous_observation": 3},
             )
             self.assertIn("maximum", response.text)
 
@@ -514,7 +500,7 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
 
         async def run():
             session = ShopSimulatorSession(
-                required_environment_version="shopsimulator-environment-v2.1",
+                required_environment_version="shopsimulator-environment-v2.2",
                 env_factory=FakeEnv,
             )
             with self.assertRaisesRegex(RuntimeError, "version mismatch"):
@@ -564,6 +550,244 @@ class VerlAdapterRuntimeTest(unittest.TestCase):
             self.assertEqual(session.state["error"], "release_error:RuntimeError:release failed")
 
         asyncio.run(run())
+
+
+class RewardV4ExplorationTest(unittest.TestCase):
+    """v4：买错细分（探索充分度 0-2 → 尽力 -0.45 / 草率 -1.00）。"""
+
+    def _step(self, tool, **params):
+        return {"tool": tool, "parameters": params}
+
+    def test_full_exploration_scores_two(self):
+        from shopping_grpo.training.grpo.adapter.runtime import exploration_score
+
+        state = {"steps": [
+            self._step("search_products", query="红酒 礼盒"),
+            self._step("search_products", query="红酒 婚庆"),
+            self._step("open_product", asin="A1"),
+            self._step("open_product", asin="A2"),
+            self._step("buy_now", asin="A2"),
+        ]}
+        score, detail = exploration_score(state)
+        self.assertEqual(score, 2)
+        self.assertEqual(detail["opened_candidates"], 2)
+        self.assertEqual(detail["distinct_queries"], 2)
+
+    def test_careless_scores_zero(self):
+        from shopping_grpo.training.grpo.adapter.runtime import exploration_score
+
+        # 搜一次、开一个、直接买——典型的"赌一把"
+        state = {"steps": [
+            self._step("search_products", query="红酒"),
+            self._step("open_product", asin="A1"),
+            self._step("buy_now", asin="A1"),
+        ]}
+        score, _ = exploration_score(state)
+        self.assertEqual(score, 0)
+
+    def test_same_product_opened_twice_counts_once(self):
+        from shopping_grpo.training.grpo.adapter.runtime import exploration_score
+
+        state = {"steps": [
+            self._step("search_products", query="红酒"),
+            self._step("open_product", asin="A1"),
+            self._step("open_product", asin="A1"),  # 同一商品重复打开不算比较
+            self._step("open_product", asin="A1"),
+        ]}
+        score, detail = exploration_score(state)
+        self.assertEqual(detail["opened_candidates"], 1)
+        self.assertEqual(score, 0)
+
+    def test_boundary_two_is_sufficient(self):
+        from shopping_grpo.training.grpo.adapter.runtime import (
+            EXPLORATION_SUFFICIENT_SCORE, exploration_score,
+        )
+
+        # 比较 + 不同搜索 = 2 分 → 尽力档
+        state = {"steps": [
+            self._step("search_products", query="红酒"),
+            self._step("open_product", asin="A1"),
+            self._step("open_product", asin="A2"),
+            self._step("search_products", query="红酒 礼盒"),
+        ]}
+        score, _ = exploration_score(state)
+        self.assertEqual(score, EXPLORATION_SUFFICIENT_SCORE)
+
+    def test_reward_tiers_ordering_v4(self):
+        from shopping_grpo.training.grpo.adapter.runtime import (
+            TRUNCATION_REWARD, WRONG_PURCHASE_CARELESS_REWARD,
+            WRONG_PURCHASE_EFFORT_REWARD,
+        )
+
+        # v4 排序（从好到坏）：早退(-0.35) > 尽力买错(-0.45) > 截断(-0.65) > 草率买错(-1.00)
+        self.assertGreater(-0.35, WRONG_PURCHASE_EFFORT_REWARD)
+        self.assertGreater(WRONG_PURCHASE_EFFORT_REWARD, TRUNCATION_REWARD)
+        self.assertGreater(TRUNCATION_REWARD, WRONG_PURCHASE_CARELESS_REWARD)
+
+
+class RewardV31Test(unittest.TestCase):
+    """v3.1：截断档（v4 起 -0.65）；连续长度惩罚不设（用户裁决 2026-09-29）。"""
+
+    def _truncated_state(self) -> dict:
+        state = make_runtime_state(task_id=9, max_steps=35)
+        state["done"] = False
+        state["error"] = "assistant_finished_without_environment_done"
+        state["steps"] = [
+            {"tool": "search_products", "parameters": {"query": "mug"}}
+        ] * 35
+        return state
+
+    def test_truncation_gets_discrete_penalty_in_both_modes(self):
+        state = self._truncated_state()
+        breakdown = reward_breakdown(state)
+        self.assertEqual(breakdown["total"], -0.65)  # v4：白卷下调（原 -0.5）
+        self.assertTrue(breakdown["truncated"])
+        self.assertFalse(breakdown["sampling_invalid"])
+        self.assertEqual(terminal_reward(state, mode="native"), -0.65)
+        self.assertEqual(terminal_reward(state, mode="constraint_aware"), -0.65)
+
+    def test_truncation_with_infra_invalid_stays_zero(self):
+        state = self._truncated_state()
+        state["infrastructure_invalid"] = True
+        self.assertEqual(reward_breakdown(state)["total"], 0.0)
+        self.assertEqual(terminal_reward(state, mode="native"), 0.0)
+
+    def test_normal_terminal_state_unaffected_by_truncation_branch(self):
+        # 正常终局（非截断）不该被误伤：total 仍取环境 native 值
+        state = make_runtime_state(task_id=9, max_steps=35)
+        state["done"] = True
+        state["terminal_result"] = {"done": True, "over": True}
+        state["final_reward"] = 1.0
+        state["reward_valid"] = True
+        state["reward_version"] = "shopsimulator-reward-v3"
+        state["reward_type"] = "gold_purchase"
+        state["reward_detail"] = {"hard_gates": {}, "dimension_scores": {}}
+        self.assertFalse(reward_breakdown(state)["truncated"])
+        self.assertEqual(reward_breakdown(state)["total"], 1.0)
+
+    def test_long_but_normal_terminal_has_no_length_penalty(self):
+        # 连续长度惩罚不设：35 步正常终局（gold）拿满分，不被步数扣分
+        state = make_runtime_state(task_id=9, max_steps=35)
+        state["done"] = True
+        state["terminal_result"] = {"done": True, "over": True}
+        state["final_reward"] = 1.0
+        state["reward_valid"] = True
+        state["reward_version"] = "shopsimulator-reward-v3"
+        state["reward_type"] = "gold_purchase"
+        state["reward_detail"] = {"hard_gates": {}, "dimension_scores": {}}
+        state["steps"] = [{"tool": "search_products", "parameters": {}}] * 35
+        self.assertEqual(reward_breakdown(state)["total"], 1.0)
+
+
+class GroupStatsTest(unittest.TestCase):
+    """组级 reward 统计纯函数（compat.compute_group_stats）。"""
+
+    def test_zero_variance_and_std(self):
+        from shopping_grpo.training.grpo.compat import compute_group_stats
+
+        # 组 A：8 条全 1.0（零方差）；组 B：4 条 0.25 / 4 条 -0.85（有大方差）
+        uids = [f"task-a_0_{i}" for i in range(8)] + [f"task-b_0_{i}" for i in range(8)]
+        scores = [1.0] * 8 + [0.25] * 4 + [-0.85] * 4
+        stats = compute_group_stats(scores, uids)
+        self.assertEqual(stats["group/zero_variance_ratio"], 0.5)
+        # 组 B 的 std=0.55，组 A 的 std=0，均值 0.275
+        self.assertAlmostEqual(stats["group/reward_std_mean"], 0.275, places=3)
+
+    def test_single_member_groups_skipped(self):
+        from shopping_grpo.training.grpo.compat import compute_group_stats
+
+        stats = compute_group_stats([1.0, 0.0], ["t1_0_0", "t2_0_0"])
+        self.assertEqual(stats, {})
+
+    def test_rollout_suffix_separates_groups(self):
+        from shopping_grpo.training.grpo.compat import compute_group_stats
+
+        # 真实结构（run2 smoke 落盘实测）：中间段是 sample 序号 0..7，
+        # 组 ID = task uuid（去末两段）
+        uids = [f"t1_{i}_0" for i in range(8)] + [f"t2_{i}_0" for i in range(8)]
+        stats = compute_group_stats([1.0] * 8 + [0.25] * 4 + [-0.85] * 4, uids)
+        self.assertEqual(stats["group/zero_variance_ratio"], 0.5)
+
+
+class LazyPatchTest(unittest.TestCase):
+    """patch_module_after_import 与延迟补丁的应用逻辑（不依赖 veRL）。"""
+
+    def _write_module(self, tmpdir, name, body):
+        import pathlib
+
+        path = pathlib.Path(tmpdir) / f"{name}.py"
+        path.write_text(body, encoding="utf-8")
+        return str(path)
+
+    def test_patch_applies_on_import_and_already_imported(self):
+        import importlib
+        import sys
+        import tempfile
+
+        from shopping_grpo.training.grpo.compat import patch_module_after_import
+
+        with tempfile.TemporaryDirectory() as td:
+            sys.path.insert(0, td)
+            # 三个文件先写齐：importlib 的目录缓存按 mtime 失效，
+            # import 之后再写同目录新文件可能因同秒 mtime 读不到
+            self._write_module(td, "lp_mod_a", "VALUE = 1\n")
+            self._write_module(td, "lp_mod_b", "VALUE = 2\n")
+            self._write_module(td, "lp_mod_c", "VALUE = 3\n")
+            try:
+                # 路径一：注册后首次导入时应用
+                patch_module_after_import("lp_mod_a", lambda m: setattr(m, "PATCHED", True))
+                mod_a = importlib.import_module("lp_mod_a")
+                self.assertTrue(mod_a.PATCHED)
+                self.assertEqual(mod_a.VALUE, 1)  # 模块体正常执行
+                # 路径二：已导入的模块直接应用
+                mod_b = importlib.import_module("lp_mod_b")
+                patch_module_after_import("lp_mod_b", lambda m: setattr(m, "PATCHED", True))
+                self.assertTrue(mod_b.PATCHED)
+                # 未注册的第三方导入不受影响
+                mod_c = importlib.import_module("lp_mod_c")
+                self.assertFalse(hasattr(mod_c, "PATCHED"))
+            finally:
+                sys.path.remove(td)
+                for name in ("lp_mod_a", "lp_mod_b", "lp_mod_c"):
+                    sys.modules.pop(name, None)
+
+    def test_save_and_stop_wraps_trainer(self):
+        import os
+        import tempfile
+        import types
+
+        from shopping_grpo.training.grpo.compat import _apply_save_and_stop
+
+        with tempfile.TemporaryDirectory() as td:
+            flag = os.path.join(td, "SAVE_AND_STOP")
+            calls = []
+
+            class FakeTrainer:
+                def step(self):
+                    return "orig_step"
+
+                def _compute_advantage(self, batch, metrics):
+                    return "orig_adv"
+
+                def _save_checkpoint(self):
+                    calls.append("saved")
+
+            module = types.SimpleNamespace(PPOTrainer=FakeTrainer)
+            _apply_save_and_stop(module, flag_path=flag)
+
+            # 无标志：两个方法透传
+            t = FakeTrainer()
+            self.assertEqual(t.step(), "orig_step")
+            self.assertEqual(t._compute_advantage({}, {}), "orig_adv")
+
+            # 有标志：保存、删标志、SystemExit 退出
+            open(flag, "w").close()
+            with self.assertRaises(SystemExit):
+                t.step()
+            self.assertEqual(calls, ["saved"])
+            self.assertFalse(os.path.exists(flag))
+            # 标志已删，后续调用恢复透传
+            self.assertEqual(t.step(), "orig_step")
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -11,9 +11,10 @@ import re
 from collections.abc import Mapping
 
 from shopping_grpo.environment.product_id import is_product_id
+from shopping_grpo.environment.options import option_choices
 
-OBSERVATION_VERSION = "shopping-observation-v2"
-HEADER = "[SHOPPING_OBSERVATION_V2]"
+OBSERVATION_VERSION = "shopping-observation-v3"
+HEADER = "[SHOPPING_OBSERVATION_V3]"
 
 
 class StructuredObservationError(ValueError):
@@ -32,6 +33,15 @@ def _list(value):
 
 def _footer(state):
     actions = _list(state.get("actions"))
+    if state.get("page_type") == "product_detail":
+        # Spec text is evidence; only IDs are model-facing click targets.
+        choices = option_choices(state)
+        option_text = {_text(choice["value"]).casefold() for choice in choices}
+        actions = [a for a in actions if a.casefold() not in option_text]
+        actions.extend(choice["option_id"] for choice in choices)
+    from shopping_grpo.environment.protocol import RETIRED_BUTTONS
+    if any(action.casefold() in RETIRED_BUTTONS for action in actions):
+        raise StructuredObservationError("observation contains retired navigation controls")
     return [
         f"搜索功能是否可用: {bool(state.get('search_available'))}",
         "可点击的按钮: " + json.dumps(actions, ensure_ascii=False),
@@ -59,11 +69,8 @@ def render_structured_observation(state: Mapping) -> str:
         lines.append("使用 search_products 提交简短、具有区分度的商品查询。")
     elif page_type == "search_results":
         lines.extend(_render_search_results(state))
-    elif page_type in {"product_detail", "information_subpage"}:
+    elif page_type == "product_detail":
         lines.extend(_render_product(state))
-        if page_type == "information_subpage":
-            lines.append(f"subpage: {_text(state.get('subpage'))}")
-            lines.append("content: " + _text(state.get("content")))
     elif page_type != "terminal":
         raise StructuredObservationError(f"unsupported page_type: {page_type!r}")
     return "\n".join(lines) + "\n\n" + "\n".join(_footer(state))
@@ -135,7 +142,9 @@ def _render_product(state):
         "key_attributes: " + ", ".join(_list(product.get("key_attributes"))),
         "selected_options: "
         + json.dumps(state.get("selected_options") or {}, ensure_ascii=False, sort_keys=True),
-        "available_options: "
-        + json.dumps(state.get("available_options") or {}, ensure_ascii=False, sort_keys=True),
+        "option_choices: "
+        + json.dumps(option_choices(state), ensure_ascii=False),
+        '规格选择：只提交 option_id，例如 select_option({"option_id":"opt_1"})。'
+        '不同规格轴累积选择，同轴新值替换旧值；ID只按当前页面解释，返回后重新读取。', 
     ]
     return lines

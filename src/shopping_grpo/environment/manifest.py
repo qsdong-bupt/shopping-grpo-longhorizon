@@ -1,4 +1,4 @@
-"""Frozen ShopSimulator Environment v2.1 contract."""
+"""Frozen ShopSimulator Environment v2.2 contract."""
 
 from __future__ import annotations
 
@@ -59,19 +59,20 @@ def validate_manifest(manifest):
         )
     if manifest["manifest_version"] != MANIFEST_VERSION:
         raise ValueError("unsupported environment manifest version")
-    if manifest["observation_version"] != "shopping-observation-v2":
-        raise ValueError("manifest does not select Observation v2")
-    if manifest["tool_version"] != "shopping-tools-v2":
-        raise ValueError("manifest does not select Tool v2")
+    if manifest["observation_version"] != "shopping-observation-v3":
+        raise ValueError("manifest does not select Observation v3")
+    from shopping_grpo.environment.tools import TOOL_VERSION
+    if manifest["tool_version"] != TOOL_VERSION:
+        raise ValueError("manifest does not select the current tool protocol")
     environment_version = manifest.get(
         "environment_version",
-        "shopsimulator-environment-v2.1",
+        "shopsimulator-environment-v2.2",
     )
-    if environment_version != "shopsimulator-environment-v2.1":
+    if environment_version != "shopsimulator-environment-v2.2":
         raise ValueError("manifest has an unsupported environment_version")
     if manifest["reward"].get("version") != "shopsimulator-reward-v3":
         raise ValueError(
-            "shopsimulator-environment-v2.1 requires shopsimulator-reward-v3"
+            "shopsimulator-environment-v2.2 requires shopsimulator-reward-v3"
         )
     if manifest["search"].get("version") != "shopsimulator-multifield-bm25-v2":
         raise ValueError("manifest does not select multi-field BM25 v2")

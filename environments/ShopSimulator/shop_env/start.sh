@@ -10,7 +10,7 @@ if [[ ! -f "${INDEX_PATH}" ]]; then
   exit 1
 fi
 
-export SHOP_ENVIRONMENT_VERSION=shopsimulator-environment-v2.1
+export SHOP_ENVIRONMENT_VERSION=shopsimulator-environment-v2.2
 export SHOP_ENV_CONFIG="${SHOP_ENV_CONFIG:-${SHOP_ENV_ROOT}/configs/environment.json}"
 export SHOP_SEARCH_INDEX="${INDEX_PATH}"
 export SHOP_MAX_STEPS="${SHOP_MAX_STEPS:-35}"

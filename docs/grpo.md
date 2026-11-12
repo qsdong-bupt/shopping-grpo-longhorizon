@@ -9,19 +9,14 @@ requiring a learned reward model.
 
 ## Integration boundary
 
-veRL is installed from the pinned `verl==0.8.0` package. This repository does
+veRL is installed from the pinned `verl==0.9.1` package. This repository does
 not vendor the veRL source tree. Project-owned integration code lives in:
 
 ```text
 src/shopping_grpo/training/grpo/
   adapter/              AgentLoop and ShopSimulator tools
   compat.py             narrow runtime compatibility hook
-  dynamic_sampling.py   bounded non-zero-reward sampling
 ```
-
-`scripts/setup.sh` applies one SHA-256-checked patch needed to connect the
-bounded dynamic sampler to veRL 0.8.0. Setup fails rather than patching an
-unknown veRL version.
 
 ## Inputs
 
@@ -63,18 +58,6 @@ Important defaults:
 | KL reward / KL loss | disabled / disabled |
 | Policy entropy measurement | enabled (logging only) |
 
-Dynamic sampling can generate at most three batches to find a useful update and
-permits at most ten consecutive skipped updates. These bounds prevent an
-all-equal reward batch from causing an unbounded resampling loop.
-
-Each run also appends `training_diagnostics.jsonl` under its output directory.
-`generation_batch` records contain every generated rollout, its public tool
-sequence, terminal result, reward breakdown, Guard rejection reasons and group
-keep/drop decision. `optimizer_step` records preserve the scalar veRL metrics,
-including entropy, PPO KL, clip fractions, response lengths and effective-group
-rates. `skipped_update` records make zero-signal attempts visible even though
-they do not advance the optimizer step.
-
 The canonical configuration is [`configs/grpo.yaml`](../configs/grpo.yaml).
 Advanced overrides may be appended after `--`:
 
@@ -97,3 +80,21 @@ bash scripts/export_grpo.sh \
 
 The reported comparison uses step 100. Select checkpoints using validation
 metrics rather than assuming that the final training step is best.
+
+## NCCL Duplicate GPU detected 排查
+
+- **原因**：Ray 的 `worker_process_setup_hook` 导入 veRL 时触发 CUDA
+  可用性查询，提前缓存设备映射。随后 Ray 设置各 worker 的
+  `CUDA_VISIBLE_DEVICES`，CUDA 仍沿用此前的映射，导致多个 worker 使用同一张 GPU。
+- **定位**：独立四卡 NCCL 通信检查通过；启用项目 hook 后，Ray 分配的 GPU UUID
+  各不相同，worker 实际查询到的 GPU UUID 却全部相同。
+- **修复**：在 `compat.py` 的 hook 导入 veRL 前设置
+  `PYTORCH_NVML_BASED_CUDA_CHECK=1`，通过 NVML 检查设备可用性；hook 中不执行
+  `torch.cuda.set_device()`，GPU 绑定在 Ray 完成资源分配后进行。
+- **验证**：现有 Docker、535 驱动及 CUDA 13 兼容库环境下，四卡 NCCL 通信、
+  veRL 通信初始化、小模型 FSDP 前向、反向和优化器更新全部通过，更新后的参数与
+  单进程参考计算一致。验证脚本为
+  [`tests/check_ray_fsdp.py`](../tests/check_ray_fsdp.py)。完整 GRPO 尚未验证。
+
+运行检查时，通过 GPU UUID 显式限定 `CUDA_VISIBLE_DEVICES`，仅选择分配给当前任务的
+GPU，避免占用其他服务使用的设备。

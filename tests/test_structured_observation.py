@@ -21,7 +21,7 @@ def search_state(count=20):
         for index in range(1, count + 1)
     ]
     return {
-        "observation_version": "shopping-observation-v2",
+        "observation_version": "shopping-observation-v3",
         "page_type": "search_results",
         "search_available": False,
         "actions": ["back to search", "next >", *[p["asin"] for p in products]],

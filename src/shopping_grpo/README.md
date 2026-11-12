@@ -13,3 +13,7 @@ smoke.py           CPU-only public smoke path
 
 User-facing commands remain in the repository-level `scripts/` directory.
 Those launchers call these modules; they are not a second implementation.
+
+The current SFT comparison uses the frozen harness and evaluation contract
+[`harness_eval_20261110`](../../docs/harness-evaluation.md). Verify its manifest
+before collecting demonstrations, building SFT data, or evaluating a checkpoint.

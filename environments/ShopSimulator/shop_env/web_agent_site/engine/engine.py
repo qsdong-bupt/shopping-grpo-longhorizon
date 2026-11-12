@@ -28,13 +28,6 @@ NEXT_PAGE = 'Next >'
 PREV_PAGE = '< Prev'
 BACK_TO_SEARCH = 'Back to Search'
 
-ACTION_TO_TEMPLATE = {
-    'Description': 'description_page.html',
-    'Features': 'features_page.html',
-    'Reviews': 'review_page.html',
-    'Attributes': 'attributes_page.html',
-}
-
 def map_action_to_html(action, **kwargs):
     action_name, action_arg = parse_action(action)
     if action_name == 'start':
@@ -74,18 +67,6 @@ def map_action_to_html(action, **kwargs):
             category=kwargs.get('category'),
             product_category=kwargs.get('product_category'),
         )
-    elif action_name == 'click' and action_arg in ACTION_TO_TEMPLATE:
-        path = os.path.join(TEMPLATE_DIR, ACTION_TO_TEMPLATE[action_arg])
-        html = render_template_string(
-            read_html_template(path),
-            session_id=kwargs['session_id'],
-            product_info=kwargs['product_info'],
-            keywords=kwargs['keywords'],
-            page=kwargs['page'],
-            asin=kwargs['asin'],
-            options=kwargs['options'],
-            instruction_text=kwargs.get('instruction_text')
-        )
     elif action_name == 'click':
         path = os.path.join(TEMPLATE_DIR, 'item_page.html')
         html = render_template_string(
@@ -97,7 +78,6 @@ def map_action_to_html(action, **kwargs):
             asin=kwargs['asin'],
             options=kwargs['options'],
             instruction_text=kwargs.get('instruction_text'),
-            show_attrs=kwargs['show_attrs'],
             selected_option=kwargs.get('selected_option'),
             selected_price=kwargs.get('selected_price'),
         )
@@ -107,7 +87,7 @@ def map_action_to_html(action, **kwargs):
 
 
 def read_html_template(path):
-    with open(path) as f:
+    with open(path, encoding='utf-8') as f:
         template = f.read()
     return template
 
@@ -116,7 +96,7 @@ def parse_action(action):
     """
     Parse action string to action name and its arguments.
     """
-    pattern = re.compile(r'(.+)\[(.+)\]')
+    pattern = re.compile(r'^([^\[\]]+)\[(.*)\]$', re.DOTALL)
     m = re.match(pattern, action)
     if m is None:
         action_name = action

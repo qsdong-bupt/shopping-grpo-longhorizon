@@ -1,0 +1,124 @@
+# V2 GRPO 正式跑 run1：1000 题（th300/hard300/medium280/easy120）× 125 步
+# 基于已验证的 smoke 配置（worktree v2-fix 实测值），改动仅限正式跑必需项：
+#   optimizer_offload=true（跨步显存累积 OOM 的解）、125 步、save/test_freq=25、
+#   val_before_train=true + smoke.parquet 做 64 题贪婪验证集、SwanLab 云端。
+hydra:
+  searchpath:
+    - pkg://verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+data:
+  train_files: ${oc.env:GRPO_TRAIN_FILE}
+  val_files: ${oc.env:GRPO_VAL_FILE}          # smoke.parquet：64 题贪婪评测，画 success_rate 曲线
+  train_batch_size: 8                          # 每步 8 题 × n=8 = 64 条轨迹
+  max_prompt_length: 4096
+  max_response_length: 20480                   # 轨迹生成上限（合计约 24k）
+  return_raw_chat: true
+  filter_overlong_prompts: true
+  truncation: error
+  num_workers: 0
+
+actor_rollout_ref:
+  hybrid_engine: true                          # colocate：训练与 rollout 共用 4 卡
+  model:
+    path: ${oc.env:GRPO_MODEL_PATH}
+    trust_remote_code: true
+    enable_gradient_checkpointing: true
+    use_remove_padding: true
+    # 分块输出头（外援方案 2026-09-29）：512 token/块过 lm_head，反向逐块重算，
+    # 不物化 [seq,vocab] logits —— 直接消除 step2 OOM 的来源（log_softmax 峰值）
+    use_fused_kernels: true
+    fused_kernel_options:
+      impl_backend: torch
+    enable_activation_offload: true            # 反向所需激活转移到 CPU
+    override_config:
+      attn_implementation: sdpa
+  actor:
+    ppo_mini_batch_size: 8                     # 16 会 OOM（log_softmax），smoke 实测 8 稳
+    ppo_micro_batch_size_per_gpu: 1
+    ppo_max_token_len_per_gpu: 24576           # 16384 会截断合法序列（实测 18k+）
+    use_dynamic_bsz: true
+    loss_agg_mode: token-mean
+    clip_ratio_low: 0.2
+    clip_ratio_high: 0.2
+    entropy_coeff: 0.0                         # 纯记录，不影响 loss
+    calculate_entropy: true
+    use_kl_loss: false
+    optim:
+      lr: 1.0e-6
+      lr_warmup_steps_ratio: 0.1
+    fsdp_config:
+      optimizer_offload: true                  # 正式跑必开：解决跨步显存累积
+      param_offload: true                      # run1 第二版：step2 长序列前向 OOM，再省 4.5G/卡
+  rollout:
+    name: vllm
+    mode: async
+    n: 8                                       # group size：每题采 8 条做组内比较
+    temperature: 1.0
+    top_p: 0.95
+    tensor_model_parallel_size: 1
+    gpu_memory_utilization: 0.30               # run1 第二版：长轨迹 rollout 留更多余量
+    max_num_seqs: 32
+    max_model_len: 24576
+    max_num_batched_tokens: 24576
+    free_cache_engine: true
+    calculate_log_probs: true
+    log_prob_micro_batch_size_per_gpu: 1
+    log_prob_max_token_len_per_gpu: 24576
+    agent:
+      num_workers: 8
+      default_agent_loop: shopping_tool_agent
+      agent_loop_config_path: ${oc.env:SHOPPING_GRPO_ROOT}/configs/agent_loop.yaml
+    multi_turn:
+      enable: true
+      format: qwen3_coder
+      max_user_turns: 40
+      max_assistant_turns: 40
+      max_parallel_calls: 1
+      max_tool_response_length: 16384
+      tool_response_truncate_side: middle
+      tool_config_path: ${oc.env:SHOPPING_GRPO_ROOT}/configs/tools.json
+      tokenization_sanity_check_mode: ignore_strippable
+    val_kwargs:
+      n: 1
+      temperature: 0.0
+      do_sample: false
+  ref:
+    log_prob_micro_batch_size_per_gpu: 1
+    log_prob_max_token_len_per_gpu: 24576
+    fsdp_config:
+      param_offload: true
+
+algorithm:
+  adv_estimator: grpo
+  use_kl_in_reward: false
+  norm_adv_by_std_in_grpo: false               # Dr. GRPO 风格：组内排名不加 std 归一化
+  disable_kl: true                             # 连参考模型都不加载
+  loss_type: ppo_clip
+
+reward_model:
+  enable: false
+
+ray_kwargs:
+  ray_init:
+    runtime_env:
+      worker_process_setup_hook: shopping_grpo.training.grpo.compat.install_torch_padding_fallback
+      env_vars:
+        PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+
+trainer:
+  total_epochs: 1                              # 1000 题 / 8 题/步 = 125 步，恰好 1 epoch
+  total_training_steps: 125
+  save_freq: 25                                # 步 25/50/75/100/125 存 checkpoint
+  test_freq: 25                                # 每 25 步跑 64 题贪婪验证
+  val_before_train: true                       # step0 基线点
+  logger: [console, swanlab]
+  swanlab_mode: cloud                          # 正式跑上云（API key 在 .env，launch 脚本注入）
+  project_name: shopping-grpo
+  experiment_name: v2-run1
+  default_local_dir: ${oc.env:GRPO_OUTPUT_DIR}
+  n_gpus_per_node: 4
+  nnodes: 1

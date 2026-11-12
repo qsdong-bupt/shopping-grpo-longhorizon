@@ -10,12 +10,18 @@ import time
 import traceback
 from datetime import datetime, timezone
 from http.client import RemoteDisconnected
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from pathlib import Path
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
+
+# 直连 opener：绕过环境代理，训练与采集链路不依赖 SSH 隧道。
+_DIRECT_OPENER = build_opener(ProxyHandler({}))
 from uuid import uuid4
 
-from shopping_grpo.environment.actions import action_guard_tool_message, action_reject_reason
+from shopping_grpo.environment.actions import (
+    action_guard_tool_message,
+    action_reject_reason,
+)
 from shopping_grpo.environment.context import (
     ContextBudgetError,
     VllmChatTokenCounter,
@@ -29,21 +35,33 @@ from shopping_grpo.environment.tools import (
     tool_call_to_action,
 )
 from shopping_grpo.environment.observation import render_structured_observation
+from shopping_grpo.environment.protocol import runtime_protocol
 
 
-SYSTEM_PROMPT = """你是一个购物 Agent，负责在 ShopSimulator 中替用户完成一次单轮购物任务。
+# Student 基础版：仅协议层（环境接口约定）。SFT 训练、RL rollout 与正式评测使用。
+# 决策规则不允许出现在这里：购物判断力必须通过训练进入模型权重。
+STUDENT_SYSTEM_PROMPT = """你是一个购物 Agent，负责在 ShopSimulator 中替用户完成一次单轮购物任务。
 
-用户的完整需求只会在开头给出。不得向用户追问、确认、告别，也不要假设存在用户对话工具。你只能调用提供的标准工具与商店交互。目标是在有限步骤内找到整体最符合需求的可购买商品；精确满足全部要求的商品最好，经过有效探索仍无法完成时应合理结束，不能错误购买或无效循环。
+用户的完整需求只会在开头给出。不得向用户追问、确认、告别，也不要假设存在用户对话工具。你只能调用提供的标准工具与商店交互，在有限步骤内完成购买；未购买时由环境运行边界结束任务。
 
 执行规则：
-1. 动作合法性与历史比较。当前页面是动作合法性的唯一依据；历史 observation 可以用于记住和比较候选，但不能直接点击历史页面中的 ASIN、按钮或规格。每次工具返回后先阅读最新 observation 中的“可点击的按钮”，每个 assistant 回合只调用一个工具。
-2. 页面状态与参数。Description、Features、Reviews、Attributes 都是信息子页：一旦进入这类子页，必须先调用当前页面可见的 `prev_page` 或 `back_to_search` 返回；不得直接切换到另一个信息子页、选择规格、购买或搜索。无参数工具（查看、翻页、返回、购买）必须传严格的 `{}`；只有 `search_products` 使用 `query`、`open_product` 使用 `asin`、`select_option` 使用 `value`。
-3. 搜索与候选探索。查询应简洁，优先使用品类和最有区分度的品牌、型号、核心功能或规格，不要机械复制整段需求。结果不理想时，缩短查询、更换真正不同的关键词或翻页；出现有希望的商品时应打开核验。不要重复相同查询，也不要只做同义改写却反复得到相同候选。
-4. 固定选择优先级。按“品类 > 预算 > 品牌 > 型号与核心功能 > 规格属性”比较候选。品类必须正确；选择具体规格后的实际价格不得超过用户明确预算。品类不符、价格未知或超预算时绝不能购买。在通过这两个门槛的候选中，依次优先满足品牌、型号与核心功能、规格属性；全部要求都满足的候选最好。
-5. 证据、规格与购买。品牌、型号、规格、功能和价格优先依据结构化字段、商品详情、Description、Features 和 Attributes；Reviews 只用于辅助判断使用体验，不能用于确认型号、官方功能、规格或价格。先完成必要的商品核验，再为最终候选补齐当前商品所有影响可购买 variant 的必要规格轴；不要为了临时浏览而随意选择规格。同一规格轴只选择一个当前页面可见的值，并以完整 variant 的实际价格判断预算。只有 `Buy Now` 当前可见，且商品通过品类和预算门槛，并在其余维度上是已核验候选中的最佳选择时，才调用 `buy_now`。
-6. 主动结束。经过多次有实质差异的搜索和多个候选核验，仍没有可接受商品，并且当前没有明显值得继续核验的候选时，调用 `finish_without_purchase`。不得过早结束，也不要为了增加搜索次数继续无效探索；是否达到结束资格由环境判断。
-7. 防止循环和非法动作。不要连续重复同一动作，也不要在相同结果、商品或子页之间无目的往返；后续操作应带来新候选、新商品信息、新规格选择或新的需求证据。不要调用 `think` 工具。若 tool 返回“本地动作守卫拒绝，未执行”，依据错误消息和最新 observation 改为一个合法动作，不要重复被拒绝的调用。不要在任务结束前输出最终答复或推荐总结；只有环境报告任务结束后才停止。
+1. 动作合法性。当前页面是动作合法性的唯一依据；历史 observation 可用于记住和比较候选，但不能直接点击历史页面中的 ASIN、按钮或规格。每次工具返回后先阅读最新 observation 中的“可点击的按钮”，每个 assistant 回合只调用一个工具。
+2. 页面状态与参数。搜索结果页可打开商品或翻页；商品详情页可选择规格、购买或返回。无参数工具必须传严格的 {}；只有 search_products 使用 query、open_product 使用 asin、select_option 使用 option_id（如 opt_1），必须从当前页面 option_choices 选择ID，不得复制或改写规格文字。
+3. 守卫反馈。若 tool 返回“本地动作守卫拒绝，未执行”，依据错误消息和最新 observation 改为一个合法动作，不要重复被拒绝的调用。不要在任务结束前输出最终答复或推荐总结；只有环境报告任务结束后才停止。
+4. 页面导航。商品详情页不能直接打开其他商品、翻页或搜索。若要查看其他候选，且当前有 < Prev 按钮，调用 prev_page({}) 返回原搜索结果页；若要重新搜索，且当前有 Back to Search 按钮，调用 back_to_search({}) 返回搜索首页。搜索首页不是原搜索结果页：仅当搜索功能可用时调用 search_products 获取结果，不能直接使用历史 ASIN、规格或翻页目标。每次返回或搜索后，先读取新的 observation，再决定下一步；所有导航都以当前实际按钮为准。
 """
+
+# Teacher 采集版：协议层 + 决策规则。只在采集教材轨迹时使用，绝不进入训练样本。
+TEACHER_SYSTEM_PROMPT = STUDENT_SYSTEM_PROMPT + """
+5. 搜索与候选探索。查询应简洁，优先使用品类和最有区分度的品牌、型号、核心功能或规格，不要机械复制整段需求。结果不理想时，缩短查询、更换真正不同的关键词或翻页；出现有希望的商品时应打开核验。不要重复相同查询，也不要只做同义改写却反复得到相同候选。
+6. 需求约束与候选比较。候选必须满足用户明确要求的品类、品牌、型号、核心功能和规格，以及明确的预算上限。区分明确要求与“优先、最好”等软偏好；软偏好用于比较满足明确要求的候选，不得覆盖硬约束。选择具体规格后，以完整 variant 的实际价格核验预算；价格未知或超过明确预算上限时不得购买。
+7. 证据与核验。品牌、型号、规格、功能和价格以商品详情页实际展示的信息为准，未展示的信息不得假定已满足。为最终候选补齐当前商品所有影响可购买 variant 的必要规格轴，同一规格轴只选择一个当前页面可见的值，并以完整 variant 的实际价格判断预算。
+8. 收敛购买。候选满足用户全部明确约束、必要规格已选齐且实际价格已确认时，直接调用 `buy_now` 完成购买，无需为寻找更优候选而继续搜索或比较。连续多次搜索未出现新的合格候选时，如已有核验合格的候选，通过合法导航返回并确认当前状态后购买；如没有合格候选，不得仅为结束任务而购买不符合要求的商品。 
+9. 防止循环。不要连续重复同一动作，也不要在相同结果或商品之间无目的往返；后续操作应带来新候选、新商品信息、新规格选择或新的需求证据。
+"""
+
+# 兼容别名：无显式 prompt 时的兜底用 Student 基础版。
+SYSTEM_PROMPT = STUDENT_SYSTEM_PROMPT
 
 
 MAX_BLOCKED_TOOL_CALLS = 3
@@ -78,6 +96,7 @@ class OpenAIChatClient:
         token_counter=None,
         observation_token_counter=None,
         transport=None,
+        stream=False,
     ):
         self.model = model
         self.base_url = base_url.rstrip("/")
@@ -87,6 +106,16 @@ class OpenAIChatClient:
         self.top_p = float(top_p)
         self.timeout = timeout
         self.max_tokens = int(max_tokens)
+        self.last_usage = None
+        self.total_usage = {"input": 0, "output": 0, "cached": 0}
+        # 评测流水线指标（2026-10-01）：LLM 调用次数、累计时延、TTFT 采样。
+        # 客户端按任务创建，累加器即任务级统计；TTFT 仅流式路径可测。
+        self.stream = bool(stream)
+        self.llm_calls = 0
+        self.llm_latency_ms_total = 0.0
+        self.ttft_ms_samples = []
+        self.last_latency_ms = None
+        self.last_ttft_ms = None
         if self.max_tokens < 1:
             raise ValueError("max_tokens must be positive")
         self.thinking = bool(thinking)
@@ -156,7 +185,7 @@ class OpenAIChatClient:
                 "model": self.model,
                 "input": _responses_input(request_messages),
                 "tools": _responses_tools(tools),
-                "tool_choice": "auto",
+                "tool_choice": "required",
                 "max_output_tokens": self.max_tokens,
             }
         else:
@@ -164,7 +193,7 @@ class OpenAIChatClient:
                 "model": self.model,
                 "messages": request_messages,
                 "tools": tools,
-                "tool_choice": "auto",
+                "tool_choice": "required",
                 # 约束单个 assistant 回合的输出；--max-model-len 只限制上下文，
                 # 不能防止模型在未调用工具时持续生成纯文本。
                 "max_tokens": self.max_tokens,
@@ -190,11 +219,22 @@ class OpenAIChatClient:
             # 避免 Cloudflare 将 Python urllib 默认客户端识别为自动化流量。
             "User-Agent": "shopping-grpo-longhorizon/0.1",
         }
+        if getattr(self, "extra_headers", None):
+            headers.update(self.extra_headers)
         url = self.base_url if self.responses_api else f"{self.base_url}/chat/completions"
         for attempt in range(MODEL_COMPLETION_RETRIES + 1):
             try:
+                ttft_ms = None
                 if self.transport is not None:
+                    started = time.monotonic()
                     response = self.transport(url, payload, headers, self.timeout)
+                    latency_ms = (time.monotonic() - started) * 1000.0
+                    usage = response.get("usage")
+                    message = _response_message(response, responses_api=self.responses_api)
+                elif self.stream and not self.responses_api:
+                    message, usage, latency_ms, ttft_ms = self._stream_chat(
+                        url, payload, headers
+                    )
                 else:
                     request = Request(
                         url,
@@ -202,13 +242,91 @@ class OpenAIChatClient:
                         headers=headers,
                         method="POST",
                     )
-                    with urlopen(request, timeout=self.timeout) as raw:
+                    started = time.monotonic()
+                    # 直连：绕过环境代理，采集不依赖 SSH 隧道。
+                    with _DIRECT_OPENER.open(request, timeout=self.timeout) as raw:
                         response = json.loads(raw.read().decode("utf-8"))
-                return _response_message(response, responses_api=self.responses_api)
+                    latency_ms = (time.monotonic() - started) * 1000.0
+                    usage = response.get("usage")
+                    message = _response_message(response, responses_api=self.responses_api)
+                self.last_usage = usage
+                usage = usage or {}
+                self.total_usage["input"] += usage.get("prompt_tokens") or 0
+                self.total_usage["output"] += usage.get("completion_tokens") or 0
+                self.total_usage["cached"] += (
+                    (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+                    or 0
+                )
+                self.llm_calls += 1
+                self.llm_latency_ms_total += latency_ms
+                self.last_latency_ms = latency_ms
+                self.last_ttft_ms = ttft_ms
+                if ttft_ms is not None:
+                    self.ttft_ms_samples.append(ttft_ms)
+                return message
             except (RemoteDisconnected, TimeoutError, URLError):
                 if attempt >= MODEL_COMPLETION_RETRIES:
                     raise
                 time.sleep(MODEL_RETRY_DELAY_SECONDS * (attempt + 1))
+
+    def _stream_chat(self, url, payload, headers):
+        """流式请求（评测指标用）：累积 SSE 分片，返回 (message, usage, latency_ms, ttft_ms)。
+
+        TTFT 只有流式可测。工具调用分片按 index 拼接（vLLM 在首片发 id/name、
+        后续片追加 arguments）；末片在 include_usage 下携带 usage。
+        """
+        payload = dict(payload, stream=True, stream_options={"include_usage": True})
+        request = Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        started = time.monotonic()
+        ttft_ms = None
+        usage = None
+        content_parts = []
+        tool_calls = {}
+        with _DIRECT_OPENER.open(request, timeout=self.timeout) as raw:
+            for raw_line in raw:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if data == "[DONE]":
+                    break
+                chunk = json.loads(data)
+                if chunk.get("usage"):
+                    usage = chunk["usage"]
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                if delta.get("content"):
+                    if ttft_ms is None:
+                        ttft_ms = (time.monotonic() - started) * 1000.0
+                    content_parts.append(delta["content"])
+                for fragment in delta.get("tool_calls") or []:
+                    if ttft_ms is None:
+                        ttft_ms = (time.monotonic() - started) * 1000.0
+                    index = fragment.get("index", 0)
+                    slot = tool_calls.setdefault(
+                        index,
+                        {"id": None, "type": "function",
+                         "function": {"name": "", "arguments": ""}},
+                    )
+                    if fragment.get("id"):
+                        slot["id"] = fragment["id"]
+                    function = fragment.get("function") or {}
+                    if function.get("name"):
+                        slot["function"]["name"] += function["name"]
+                    if function.get("arguments"):
+                        slot["function"]["arguments"] += function["arguments"]
+        latency_ms = (time.monotonic() - started) * 1000.0
+        message = {"role": "assistant", "content": "".join(content_parts) or None}
+        if tool_calls:
+            message["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
+        return message, usage, latency_ms, ttft_ms
 
     def project_observation(self, tool_name, observation, parameters=None):
         if self.observation_token_budget is None:
@@ -267,6 +385,8 @@ def completed_task_attempts(path):
             except json.JSONDecodeError:
                 continue
             if "task_id" in row:
+                if row.get("runtime_protocol") != runtime_protocol():
+                    raise ValueError("Cannot resume trajectories from a different shopping protocol; use a new output file")
                 done.add((int(row["task_id"]), int(row.get("attempt_index", 0))))
     return done
 
@@ -281,8 +401,11 @@ def collect_for_task(
     attempt_index=0,
 ):
     """执行一个任务并返回完整轨迹；所有异常都会被写入轨迹后再释放环境。"""
+    task_started = datetime.now(timezone.utc)
+    env_latency_ms_total = 0.0
     trajectory = {
         "trajectory_id": str(uuid4()),
+        "runtime_protocol": runtime_protocol(),
         "task_id": int(task["task_id"]),
         "attempt_index": int(attempt_index),
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -312,6 +435,7 @@ def collect_for_task(
             latest_observation = initial.get(
                 "instruction", initial.get("observation", "")
             )
+        previous_observation_state = initial.get("observation_state") or {}
         trajectory["initial_result"] = initial
         messages = _initial_messages(task, initial)
         trajectory["messages"] = messages
@@ -321,6 +445,8 @@ def collect_for_task(
 
         while len(trajectory["steps"]) < int(max_steps):
             # 先请求模型，再校验动作；工具结果会追加到 messages，成为下一轮上下文。
+            # Keep the API tool prefix stable across pages; the action guard
+            # separately validates every call against the latest observation.
             assistant = client.complete(messages, tool_schemas)
             context_tokens = getattr(client, "last_context_tokens", None)
             if context_tokens is not None:
@@ -349,8 +475,9 @@ def collect_for_task(
                 )
             tool_calls = assistant.get("tool_calls") or []
             if not tool_calls:
+                # tool_choice=required 下属于协议异常：记录明确状态，不当作正常交卷。
                 messages.append(assistant)
-                trajectory["status"] = "assistant_final"
+                trajectory["status"] = "model_no_tool_call"
                 break
             tool_call = tool_calls[0]
             try:
@@ -384,7 +511,9 @@ def collect_for_task(
                 return trajectory
             messages.append(assistant)
             # 只有通过当前 observation 守卫的调用才会触碰环境并消耗一个执行步骤。
-            step = _execute_tool_call(env, tool_call, len(trajectory["steps"]))
+            env_started = time.monotonic()
+            step = _execute_tool_call(env, tool_call, len(trajectory["steps"]), latest_observation)
+            env_latency_ms_total += (time.monotonic() - env_started) * 1000.0
             raw_observation = step["observation"]
             projector = getattr(client, "project_observation", None)
             if projector is not None:
@@ -397,6 +526,10 @@ def collect_for_task(
                     step["raw_observation"] = raw_observation
                     step["observation"] = visible_observation
                     step["projection"] = projection
+            feedback = _selection_feedback(previous_observation_state, step)
+            if feedback:
+                step["selection_feedback"] = feedback
+            previous_observation_state = (step.get("result") or {}).get("observation_state") or {}
             trajectory["steps"].append(step)
             consecutive_blocked_calls = 0
             latest_observation = step["observation"]
@@ -439,7 +572,45 @@ def collect_for_task(
                 "traceback": traceback.format_exc(),
             }
             trajectory["status"] = "environment_release_failed"
+        # 指标在所有返回路径（含早退）上统一附加；finally 内赋值对已返回的
+        # 同一 dict 对象同样生效。
+        trajectory["metrics"] = _trajectory_metrics(
+            client, task_started, env_latency_ms_total
+        )
     return trajectory
+
+
+def _trajectory_metrics(client, task_started, env_latency_ms_total):
+    """轨迹级过程指标（2026-10-01）：墙钟、LLM 时延/TTFT、token 用量、环境耗时。
+
+    假客户端（单测）不暴露累加器时只产出墙钟与环境耗时，其余字段缺席。
+    """
+    metrics = {
+        "task_started_at": task_started.isoformat(),
+        "task_duration_ms": (
+            datetime.now(timezone.utc) - task_started
+        ).total_seconds() * 1000.0,
+        "env_latency_ms_total": env_latency_ms_total,
+    }
+    llm_calls = getattr(client, "llm_calls", None)
+    if llm_calls is None:
+        return metrics
+    samples = list(getattr(client, "ttft_ms_samples", []) or [])
+    usage = getattr(client, "total_usage", None) or {}
+    metrics.update(
+        {
+            "llm_calls": int(llm_calls),
+            "llm_latency_ms_total": float(
+                getattr(client, "llm_latency_ms_total", 0.0)
+            ),
+            "llm_ttft_ms_mean": (sum(samples) / len(samples)) if samples else None,
+            "llm_ttft_ms_max": max(samples) if samples else None,
+            "prompt_tokens": int(usage.get("input") or 0),
+            "completion_tokens": int(usage.get("output") or 0),
+            "cached_tokens": int(usage.get("cached") or 0),
+        }
+    )
+    return metrics
 
 
 def append_jsonl(path, rows):
@@ -492,7 +663,12 @@ def _is_infrastructure_failure(trajectory):
         return True
     error = trajectory.get("error") or {}
     error_type = error.get("type")
-    if error_type in {URLError.__name__, RemoteDisconnected.__name__, TimeoutError.__name__}:
+    if error_type in {
+        HTTPError.__name__,
+        URLError.__name__,
+        RemoteDisconnected.__name__,
+        TimeoutError.__name__,
+    }:
         return True
     if error_type == ShopHttpError.__name__:
         return True
@@ -502,9 +678,9 @@ def _is_infrastructure_failure(trajectory):
     )
 
 
-def _execute_tool_call(env, tool_call, step_index):
+def _execute_tool_call(env, tool_call, step_index, observation=""):
     name, arguments = _tool_call_name_args(tool_call)
-    action = tool_call_to_action(name, arguments)
+    action = tool_call_to_action(name, arguments, observation)
     result = {"instruction": arguments.get("note", ""), "reward": 0.0, "done": False}
     step = {
         "step_index": step_index,
@@ -517,6 +693,9 @@ def _execute_tool_call(env, tool_call, step_index):
         "done": False,
         "result": {},
     }
+    if name == "select_option":
+        from shopping_grpo.environment.options import resolve_option
+        step["resolved_option"] = resolve_option(arguments["option_id"], observation)
     if action is not None:
         try:
             result = env.step(action)
@@ -538,12 +717,49 @@ def _execute_tool_call(env, tool_call, step_index):
     return step
 
 
+def _selection_feedback(previous_state, step):
+    """Summarize public product and actual selection state after selection."""
+    if step.get("tool_name") != "select_option":
+        return ""
+    state = (step.get("result") or {}).get("observation_state") or {}
+    if state.get("page_type") != "product_detail":
+        return ""
+    product = state.get("product") or {}
+    selected = state.get("selected_options") or {}
+    available = state.get("available_options") or {}
+    missing = [axis for axis in available if axis not in selected]
+    price = state.get("selected_price", product.get("price"))
+
+    def display(value):
+        return "未提供" if value is None or value == "" else str(value)
+
+    attributes = product.get("key_attributes") or []
+    attributes_text = "、".join(str(item) for item in attributes) if isinstance(attributes, list) else str(attributes)
+    lines = [
+        "[选择后的商品与规格摘要]",
+        "",
+        "商品标题：" + display(product.get("title")),
+        "品牌／店铺：" + display(product.get("brand")),
+        "商品类别：" + display(product.get("category")),
+        "商品属性：" + display(attributes_text),
+        "当前页面价格：" + (display(price) + " 元" if price is not None and price != "" else "未提供"),
+        "当前已选规格：",
+    ]
+    lines.extend(f"- {axis}：{value}" for axis, value in selected.items())
+    if not selected:
+        lines.append("- 无")
+    lines.append("尚未选择的规格轴：" + ("、".join(missing) if missing else "无"))
+    return "\n".join(lines)
+
+
 def _tool_message(tool_call, step):
     return {
         "role": "tool",
         "tool_call_id": tool_call.get("id"),
         "name": step["tool_name"],
-        "content": step["observation"],
+        "content": step["observation"] + (
+            "\n\n" + step["selection_feedback"] if step.get("selection_feedback") else ""
+        ),
     }
 
 

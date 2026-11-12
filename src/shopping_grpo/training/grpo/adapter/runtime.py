@@ -92,8 +92,6 @@ def record_observation_projection(state: dict, meta: dict) -> None:
 
 def record_action_attempt(state: dict, tool_name: str, parameters: dict, observation: str) -> None:
     """记录环境动作尝试，并统计最近三次中的重复签名。"""
-    if tool_name == "think":
-        return
     canonical_parameters = json.dumps(
         parameters,
         ensure_ascii=False,
@@ -111,7 +109,7 @@ def record_action_attempt(state: dict, tool_name: str, parameters: dict, observa
 
 
 def validate_reward(raw_detail: object) -> dict:
-    """Validate and minimize public Environment v2.1 / Reward v3 diagnostics."""
+    """Validate and minimize public Environment v2.2 / Reward v3 diagnostics."""
     if not isinstance(raw_detail, Mapping):
         raise ValueError("reward_detail must be an object")
     if raw_detail.get("reward_version") != "shopsimulator-reward-v3":
@@ -215,6 +213,42 @@ def _normal_terminal(state: dict) -> bool:
     )
 
 
+# reward v4（2026-10-03 定稿，用户裁决）：
+# - 截断档下调：预算耗尽未终局 → -0.65（原 -0.5）。"交白卷"应比
+#   "尽力后买错"(-0.45) 更重罚——原排序被用户纠正
+# - 买错细分（本次核心改动）：wrong_purchase 按探索充分度分两档——
+#   尽力买错 -0.45 / 草率买错 -1.00。动机：v3.1 的结果导向 reward 在
+#   GRPO 中磨掉了探索倾向（run3 轨迹分析定论：探索↓接受度↑），
+#   用分数区分"有意义探索后的失败"与"没比较就赌"以恢复探索
+# - 连续长度惩罚：不设（用户裁决 2026-09-29，维持）
+TRUNCATION_REWARD = -0.65
+WRONG_PURCHASE_EFFORT_REWARD = -0.45   # 探索充分后买错
+WRONG_PURCHASE_CARELESS_REWARD = -1.00  # 未充分探索就买错
+EXPLORATION_SUFFICIENT_SCORE = 2       # 至少两个候选且至少两种搜索参数
+
+def exploration_score(state: dict) -> tuple[int, dict]:
+    """轨迹探索充分度（0-2）与明细，reward v4 买错细分依据。"""
+    steps = state.get("steps") or []
+    opened = {
+        json.dumps(s.get("parameters") or {}, sort_keys=True, ensure_ascii=False)
+        for s in steps
+        if s.get("tool") == "open_product"
+    }
+    queries = {
+        json.dumps(s.get("parameters") or {}, sort_keys=True, ensure_ascii=False)
+        for s in steps
+        if s.get("tool") == "search_products"
+    }
+    score = (
+        (1 if len(opened) >= 2 else 0)
+        + (1 if len(queries) >= 2 else 0)
+    )
+    return score, {
+        "opened_candidates": len(opened),
+        "distinct_queries": len(queries),
+    }
+
+
 def reward_breakdown(state: dict) -> dict[str, float | bool]:
     """计算约束感知终局奖励；基础设施无效轨迹只返回诊断，不制造学习信号。"""
     invalid = bool(state.get("infrastructure_invalid"))
@@ -223,6 +257,38 @@ def reward_breakdown(state: dict) -> dict[str, float | bool]:
     if not math.isfinite(native):
         invalid = True
         native = 0.0
+
+    # v3.1 截断档：预算耗尽未终局（reward_version 此时通常还是 None，
+    # 环境没来得及报终局），必须在 v3/兜底分支之前拦截。
+    truncated = (
+        state.get("error") == "assistant_finished_without_environment_done"
+    )
+    if truncated and not invalid:
+        return {
+            "r_type": 0.0,
+            "r_att": 0.0,
+            "r_option": 0.0,
+            "r_price": 0.0,
+            "match_score": 0.0,
+            "evidence_coverage": 0.0,
+            "brand_score": 0.0,
+            "model_score": 0.0,
+            "core_function_score": 0.0,
+            "option_score": 0.0,
+            "full": 0.0,
+            "strict": 0.0,
+            "native": 0.0,
+            "semantic": 0.0,
+            "efficiency": 0.0,
+            "repeat_action_rate": 0.0,
+            "total": TRUNCATION_REWARD,
+            "terminal_utility": TRUNCATION_REWARD,
+            "truncated": True,
+            "purchase_success": 0.0,
+            "sampling_invalid": False,
+            "infrastructure_invalid": False,
+            "reward_unverifiable": False,
+        }
 
     if state.get("reward_version") == "shopsimulator-reward-v3":
         detail = state.get("reward_detail") or {}
@@ -237,9 +303,10 @@ def reward_breakdown(state: dict) -> dict[str, float | bool]:
             state.get("reward_type")
             in {"gold_purchase", "valid_alternative_purchase"}
         )
-        terminal_utility = (
-            native if normal_terminal and not invalid and not invalid_reward else 0.0
-        )
+        if normal_terminal and not invalid and not invalid_reward:
+            terminal_utility = native
+        else:
+            terminal_utility = 0.0
         semantic = float(purchase_success)
         return {
             "r_type": component("category"),
@@ -261,15 +328,13 @@ def reward_breakdown(state: dict) -> dict[str, float | bool]:
             "native": native,
             "semantic": semantic,
             "efficiency": 0.0,
-            "penalty_overlong": 0.0,
-            "penalty_unfinished": 0.0,
-            "penalty_repeat": 0.0,
             "repeat_action_rate": (
                 int(state.get("repeat_action_count", 0))
                 / max(int(state.get("action_attempt_count", 0)), 1)
             ),
             "total": terminal_utility,
             "terminal_utility": terminal_utility,
+            "truncated": truncated,
             "purchase_success": float(purchase_success),
             "sampling_invalid": bool(invalid or invalid_reward),
             "infrastructure_invalid": invalid,
@@ -294,9 +359,6 @@ def reward_breakdown(state: dict) -> dict[str, float | bool]:
         "native": native,
         "semantic": 0.0,
         "efficiency": 0.0,
-        "penalty_overlong": 0.0,
-        "penalty_unfinished": 0.0,
-        "penalty_repeat": 0.0,
         "repeat_action_rate": repeat_action_rate,
         "total": 0.0,
         "terminal_utility": 0.0,
@@ -307,39 +369,6 @@ def reward_breakdown(state: dict) -> dict[str, float | bool]:
     }
 
 
-def apply_reward_length_shaping(
-    reward: Mapping,
-    state: Mapping,
-    *,
-    enabled: bool,
-    soft_threshold: int = 20,
-    penalty_per_step: float = 0.01,
-    max_penalty: float = 0.15,
-) -> dict:
-    """Apply optional soft length cost and invalidate hard max-step trajectories."""
-    shaped = dict(reward)
-    if not enabled:
-        return shaped
-    threshold = int(soft_threshold)
-    per_step = float(penalty_per_step)
-    cap = float(max_penalty)
-    if threshold < 1 or per_step < 0 or cap < 0:
-        raise ValueError("length shaping threshold must be positive and penalties non-negative")
-
-    steps = len(state.get("steps") or [])
-    penalty = min(max(steps - threshold, 0) * per_step, cap)
-    shaped["penalty_overlong"] = float(shaped.get("penalty_overlong", 0.0)) + penalty
-    shaped["total"] = float(shaped["total"]) - penalty
-    shaped["terminal_utility"] = float(shaped["terminal_utility"]) - penalty
-    shaped["overlong"] = bool(
-        state.get("termination_reason") == "max_steps"
-        or steps >= int(state.get("max_steps", steps + 1))
-    )
-    if shaped["overlong"]:
-        shaped["sampling_invalid"] = True
-    return shaped
-
-
 def terminal_reward(state: dict, mode: str = "native") -> float:
     """按实验模式返回原生或约束感知奖励。"""
     if mode == "constraint_aware":
@@ -347,6 +376,11 @@ def terminal_reward(state: dict, mode: str = "native") -> float:
     if mode != "native":
         raise ValueError(f"unknown shopping reward mode: {mode!r}")
     if state.get("infrastructure_invalid") or state.get("error") or not _normal_terminal(state):
+        if (
+            state.get("error") == "assistant_finished_without_environment_done"
+            and not state.get("infrastructure_invalid")
+        ):
+            return TRUNCATION_REWARD  # v3.1 截断档
         return 0.0
     return float(state.get("final_reward", 0.0))
 

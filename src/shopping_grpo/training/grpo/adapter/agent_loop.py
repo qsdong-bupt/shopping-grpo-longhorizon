@@ -16,8 +16,11 @@ from shopping_grpo.environment.projection import (
     project_observation,
 )
 from shopping_grpo.training.grpo.adapter.runtime import (
-    apply_reward_length_shaping,
+    EXPLORATION_SUFFICIENT_SCORE,
+    WRONG_PURCHASE_CARELESS_REWARD,
+    WRONG_PURCHASE_EFFORT_REWARD,
     current_runtime_state,
+    exploration_score,
     record_observation_projection,
     reward_breakdown,
     task_id_from_kwargs,
@@ -47,10 +50,6 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
         observation_detail_token_budget=4096,
         observation_generic_token_budget=768,
         observation_search_top_k=20,
-        reward_length_shaping_enable=False,
-        reward_length_soft_threshold=20,
-        reward_length_penalty_per_step=0.01,
-        reward_length_max_penalty=0.15,
         env_factory=None,
         **kwargs,
     ):
@@ -70,14 +69,6 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
         self.observation_detail_token_budget = int(observation_detail_token_budget)
         self.observation_generic_token_budget = int(observation_generic_token_budget)
         self.observation_search_top_k = int(observation_search_top_k)
-        self.reward_length_shaping_enable = (
-            reward_length_shaping_enable
-            if isinstance(reward_length_shaping_enable, bool)
-            else str(reward_length_shaping_enable).lower() == "true"
-        )
-        self.reward_length_soft_threshold = int(reward_length_soft_threshold)
-        self.reward_length_penalty_per_step = float(reward_length_penalty_per_step)
-        self.reward_length_max_penalty = float(reward_length_max_penalty)
         maximum_context_input = (
             self.context_window_tokens
             - self.context_generation_reserve_tokens
@@ -100,12 +91,6 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
             raise ValueError("observation_search_top_k must be positive")
         if self.reward_mode not in {"native", "constraint_aware"}:
             raise ValueError(f"unknown shopping reward mode: {self.reward_mode!r}")
-        if self.reward_length_shaping_enable and self.reward_mode != "constraint_aware":
-            raise ValueError("reward length shaping requires constraint_aware reward mode")
-        if not 0 < self.reward_length_soft_threshold < self.max_steps:
-            raise ValueError("reward_length_soft_threshold must be between 1 and max_steps")
-        if min(self.reward_length_penalty_per_step, self.reward_length_max_penalty) < 0:
-            raise ValueError("reward length penalties must be non-negative")
         self.env_factory = env_factory
 
     async def _handle_generating_state(
@@ -235,18 +220,85 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
         return response, reward, step
 
     async def _handle_processing_tools_state(self, agent_data):
-        """强制每个 assistant 回合最多执行一个工具调用。"""
+        """每个 assistant 回合只执行第一个工具调用，多余的丢弃并计数。
+
+        与采集侧 rollout 的 _enforce_serial_tool_call 行为保持一致：并行工具
+        调用是可恢复的格式偏差，直接丢弃多余调用，不终止轨迹。
+        """
         runtime_state = current_runtime_state.get()
         if runtime_state is not None and len(agent_data.tool_calls) > 1:
-            runtime_state["terminate"] = True
-            runtime_state["termination_reason"] = "parallel_tool_calls"
-            runtime_state["error"] = "parallel_tool_calls"
-            return AgentState.TERMINATED
+            dropped = len(agent_data.tool_calls) - 1
+            runtime_state["dropped_parallel_tool_calls"] = (
+                runtime_state.get("dropped_parallel_tool_calls", 0) + dropped
+            )
+            agent_data.tool_calls = agent_data.tool_calls[:1]
         next_state = await super()._handle_processing_tools_state(agent_data)
         runtime_state = current_runtime_state.get()
         if runtime_state is not None and runtime_state.get("terminate"):
             return AgentState.TERMINATED
         return next_state
+
+    _jev_client = None
+    _jev_cache: dict = {}
+
+    def _jev_grey_zone(self, state):
+        """灰区购买（valid/partial alternative）经 Jev 判定是否完全满足需求。
+
+        返回 verdict dict 或 None（非灰区 / 基础设施无效）。判定按
+        (instruction, asin, options, price) 缓存，训练内同一组合只判一次。
+        """
+        import threading as _th
+        if state.get("infrastructure_invalid") or not state.get("done"):
+            return None
+        reward_type = state.get("reward_type")
+        if reward_type not in {
+            "valid_alternative_purchase", "partial_alternative_purchase",
+        }:
+            return None
+        purchase = (state.get("terminal_result") or {}).get("purchase") or {}
+        if not purchase:
+            return None
+        key = (
+            str(purchase.get("instruction_text") or ""),
+            str(purchase.get("asin") or purchase.get("name") or ""),
+            json.dumps(purchase.get("options") or {}, sort_keys=True),
+            str(purchase.get("price")),
+        )
+        with _th.Lock():
+            if key in self._jev_cache:
+                return self._jev_cache[key]
+        if self._jev_client is None:
+            from shopping_grpo.acceptance.jev_client import JevDecisionsClient
+            from pathlib import Path as _P
+            env = {}
+            envp = _P("/data/jyh-yyh/shopping-grpo-longhorizon/.env")
+            if envp.exists():
+                for line in envp.read_text().splitlines():
+                    if "=" in line and not line.startswith("#"):
+                        k, _, v = line.partition("=")
+                        env.setdefault(k.strip(), v.strip())
+            import os as _os
+            api_key = (_os.environ.get("LLMOXY_API_KEY") or env.get("LLMOXY_API_KEY")
+                       or _os.environ.get("JEVMODEL_API_KEY") or env.get("JEVMODEL_API_KEY"))
+            self._jev_client = JevDecisionsClient(api_key=api_key)
+        state_text = (
+            f"用户需求：{purchase.get('instruction_text')}\n"
+            f"候选商品：{purchase.get('name')}，"
+            f"价格 {purchase.get('price')} 元，"
+            f"所选规格 {purchase.get('options')}，"
+        )
+        attrs = purchase.get("attributes") or []
+        if attrs:
+            state_text += f"关键属性 {'、'.join(str(a) for a in attrs)}，"
+        try:
+            verdict = self._jev_client.decide_satisfaction(state_text)
+            verdict = {"choice": verdict["choice"]}
+        except Exception:
+            # Jev 不可达时保持环境原值（灰区替代品维持 v3 分数），不阻塞训练。
+            verdict = {"choice": "unavailable"}
+        with _th.Lock():
+            self._jev_cache[key] = verdict
+        return verdict
 
     async def run(self, sampling_params, **kwargs):
         """启动 session、运行父类 AgentLoop，并在 finally 中释放环境租约。"""
@@ -266,22 +318,47 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
                 state["termination_reason"] = state["error"]
                 state["terminate"] = True
             # 父类结束后统一从环境状态结算，避免把中途异常当作正常终局奖励。
-            breakdown = apply_reward_length_shaping(
-                reward_breakdown(state),
-                state,
-                enabled=getattr(self, "reward_length_shaping_enable", False),
-                soft_threshold=getattr(self, "reward_length_soft_threshold", 20),
-                penalty_per_step=getattr(self, "reward_length_penalty_per_step", 0.01),
-                max_penalty=getattr(self, "reward_length_max_penalty", 0.15),
-            )
+            breakdown = reward_breakdown(state)
             output.reward_score = (
                 float(breakdown["total"])
                 if self.reward_mode == "constraint_aware"
                 else terminal_reward(state, mode=self.reward_mode)
             )
+            # V2 灰区判定：非 Gold 且硬门通过的购买，经 Jev 语义判断，
+            # fully_satisfies 给满分 1.0（与 Gold 同权）；判定不可验证保持原值。
+            jev_verdict = self._jev_grey_zone(state)
+            if jev_verdict is not None and jev_verdict.get("choice") == "fully_satisfies":
+                output.reward_score = 1.0
+            # reward v4 买错细分：正常终局的 wrong_purchase 按探索充分度分档——
+            # 尽力买错 -0.45 / 草率买错 -1.00（动机与判定见 runtime.exploration_score）
+            expl_score, expl_detail = 0, {}
+            if (
+                state.get("reward_type") == "wrong_purchase"
+                and state.get("done")
+                and not state["error"]
+                and not state.get("infrastructure_invalid")
+                and jev_verdict is None  # 灰区走 Jev 通道，不叠加
+            ):
+                expl_score, expl_detail = exploration_score(state)
+                output.reward_score = (
+                    WRONG_PURCHASE_EFFORT_REWARD
+                    if expl_score >= EXPLORATION_SUFFICIENT_SCORE
+                    else WRONG_PURCHASE_CARELESS_REWARD
+                )
             output.extra_fields["shopping"] = {
                 "task_id": task_id,
                 "steps": len(state["steps"]),
+                "turns": len(state["steps"]),
+                "exploration_score": expl_score,
+                "exploration_detail": expl_detail,
+                "wrong_purchase_tier": (
+                    "effort" if output.reward_score == WRONG_PURCHASE_EFFORT_REWARD
+                    else "careless" if output.reward_score == WRONG_PURCHASE_CARELESS_REWARD
+                    else None
+                ),
+                "jev_choice": (
+                    jev_verdict.get("choice") if jev_verdict is not None else None
+                ),
                 "actions": [
                     {"tool": step["tool"], "parameters": step["parameters"]}
                     for step in state["steps"]
@@ -292,7 +369,6 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
                 "infrastructure_invalid": bool(state["infrastructure_invalid"]),
                 "action_attempts": int(state["action_attempt_count"]),
                 "repeat_actions": int(state["repeat_action_count"]),
-                "overlong": bool(breakdown.get("overlong", False)),
                 "reward_mode": self.reward_mode,
                 "reward_version": state.get("reward_version"),
                 "reward_type": state.get("reward_type"),
@@ -329,8 +405,6 @@ class ShoppingToolAgentLoop(ToolAgentLoop):
                     state["action_attempt_after_truncation_count"]
                 ),
             }
-            if session.trace_target is not None:
-                output.extra_fields["trace_target"] = session.trace_target
             return output
         finally:
             await session.close()

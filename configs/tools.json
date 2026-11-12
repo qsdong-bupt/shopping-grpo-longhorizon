@@ -9,18 +9,18 @@
         "type": "function",
         "function": {
           "name": "search_products",
-          "description": "仅当最新 observation 显示“搜索功能是否可用: True”时搜索；query 应包含品类和关键约束。",
+          "description": "仅当最新 observation 显示“搜索功能是否可用: True”时搜索。query 应简洁，包含品类和最有区分度的品牌、型号、功能或规格；不得重复相同查询或机械复制整段需求。",
           "parameters": {
             "type": "object",
+            "required": [
+              "query"
+            ],
+            "additionalProperties": false,
             "properties": {
               "query": {
                 "type": "string"
               }
-            },
-            "required": [
-              "query"
-            ],
-            "additionalProperties": false
+            }
           }
         }
       }
@@ -34,18 +34,18 @@
         "type": "function",
         "function": {
           "name": "open_product",
-          "description": "打开最新 observation 当前搜索结果中列出的商品；asin 必须原样取自该页面。",
+          "description": "打开最新 observation 当前搜索结果中列出的候选商品以核验价格、功能和规格；asin 必须原样取自该页面。",
           "parameters": {
             "type": "object",
+            "required": [
+              "asin"
+            ],
+            "additionalProperties": false,
             "properties": {
               "asin": {
                 "type": "string"
               }
-            },
-            "required": [
-              "asin"
-            ],
-            "additionalProperties": false
+            }
           }
         }
       }
@@ -59,94 +59,19 @@
         "type": "function",
         "function": {
           "name": "select_option",
-          "description": "选择最新 observation 当前商品页列出的规格值；不得选择导航按钮或历史页面中的值。",
+          "description": "为当前候选补齐所有影响可购买 variant 的必要规格轴；option_id 必须取自最新 observation 的 option_choices（如 opt_1），不要复制规格文字；同一规格轴只选一个值，不得选择导航按钮或历史页面中的值。选择后应按完整 variant 的实际价格重新检查预算。",
           "parameters": {
             "type": "object",
-            "properties": {
-              "value": {
-                "type": "string"
-              }
-            },
             "required": [
-              "value"
+              "option_id"
             ],
-            "additionalProperties": false
-          }
-        }
-      }
-    },
-    {
-      "class_name": "shopping_grpo.training.grpo.adapter.tools.ShopSimulatorTool",
-      "config": {
-        "type": "native"
-      },
-      "tool_schema": {
-        "type": "function",
-        "function": {
-          "name": "view_description",
-          "description": "仅当当前页面显示 Description 按钮时打开；无参数，必须传 {}。",
-          "parameters": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-            "additionalProperties": false
-          }
-        }
-      }
-    },
-    {
-      "class_name": "shopping_grpo.training.grpo.adapter.tools.ShopSimulatorTool",
-      "config": {
-        "type": "native"
-      },
-      "tool_schema": {
-        "type": "function",
-        "function": {
-          "name": "view_features",
-          "description": "仅当当前页面显示 Features 按钮时打开；无参数，必须传 {}。",
-          "parameters": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-            "additionalProperties": false
-          }
-        }
-      }
-    },
-    {
-      "class_name": "shopping_grpo.training.grpo.adapter.tools.ShopSimulatorTool",
-      "config": {
-        "type": "native"
-      },
-      "tool_schema": {
-        "type": "function",
-        "function": {
-          "name": "view_reviews",
-          "description": "仅当当前页面显示 Reviews 按钮时打开；无参数，必须传 {}。",
-          "parameters": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-            "additionalProperties": false
-          }
-        }
-      }
-    },
-    {
-      "class_name": "shopping_grpo.training.grpo.adapter.tools.ShopSimulatorTool",
-      "config": {
-        "type": "native"
-      },
-      "tool_schema": {
-        "type": "function",
-        "function": {
-          "name": "view_attributes",
-          "description": "仅当当前页面显示 Attributes 按钮时打开；无参数，必须传 {}。",
-          "parameters": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "properties": {
+              "option_id": {
+                "type": "string",
+                "pattern": "^opt_[1-9][0-9]*$"
+              }
+            }
           }
         }
       }
@@ -160,10 +85,9 @@
         "type": "function",
         "function": {
           "name": "next_page",
-          "description": "仅当当前页面显示 Next > 按钮时翻到下一页；无参数，必须传 {}。",
+          "description": "仅当当前页面显示 Next > 且当前页没有合适候选时翻到下一页以发现新商品；无参数，必须传 {}。",
           "parameters": {
             "type": "object",
-            "properties": {},
             "required": [],
             "additionalProperties": false
           }
@@ -182,7 +106,6 @@
           "description": "仅当当前页面显示 < Prev 按钮时返回上一页；无参数，必须传 {}。",
           "parameters": {
             "type": "object",
-            "properties": {},
             "required": [],
             "additionalProperties": false
           }
@@ -201,7 +124,6 @@
           "description": "仅当当前页面显示 Back to Search 按钮时返回搜索页；无参数，必须传 {}。",
           "parameters": {
             "type": "object",
-            "properties": {},
             "required": [],
             "additionalProperties": false
           }
@@ -217,64 +139,10 @@
         "type": "function",
         "function": {
           "name": "buy_now",
-          "description": "仅当最新 observation 显示 Buy Now 且商品和规格满足需求时购买；无参数，必须传 {}。",
+          "description": "不可撤销的终止动作。仅当最新 observation 显示 Buy Now、品类正确、完整 variant 的实际价格在预算内，且按品牌、型号与核心功能、规格属性比较后是已核验候选中的最佳选择时购买；无参数，必须传 {}。",
           "parameters": {
             "type": "object",
-            "properties": {},
             "required": [],
-            "additionalProperties": false
-          }
-        }
-      }
-    },
-    {
-      "class_name": "shopping_grpo.training.grpo.adapter.tools.ShopSimulatorTool",
-      "config": {
-        "type": "native"
-      },
-      "tool_schema": {
-        "type": "function",
-        "function": {
-          "name": "finish_without_purchase",
-          "description": "经过最低限度的有效探索后，确认没有合适商品时主动结束；这不是成功购买。",
-          "parameters": {
-            "type": "object",
-            "properties": {
-              "reason": {
-                "type": "string",
-                "enum": [
-                  "no_suitable_product"
-                ]
-              }
-            },
-            "required": [
-              "reason"
-            ],
-            "additionalProperties": false
-          }
-        }
-      }
-    },
-    {
-      "class_name": "shopping_grpo.training.grpo.adapter.tools.ShopSimulatorTool",
-      "config": {
-        "type": "native"
-      },
-      "tool_schema": {
-        "type": "function",
-        "function": {
-          "name": "think",
-          "description": "Record private reasoning.",
-          "parameters": {
-            "type": "object",
-            "properties": {
-              "note": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "note"
-            ],
             "additionalProperties": false
           }
         }

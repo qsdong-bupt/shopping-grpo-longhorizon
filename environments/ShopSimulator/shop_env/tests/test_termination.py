@@ -3,7 +3,31 @@ import unittest
 from web_agent_site.engine.termination import EvidenceProgressTracker
 
 
-class TerminationV3Test(unittest.TestCase):
+class TerminationV5Test(unittest.TestCase):
+    def test_consecutive_next_pages_with_new_results_are_allowed(self):
+        tracker = EvidenceProgressTracker(exact_repeat_limit=2, no_progress_limit=4)
+        pages = [
+            ["1", "2", "3"],
+            ["4", "5", "6"],
+            ["7", "8", "9"],
+            ["10", "11", "12"],
+        ]
+        tracker.record("search", "query", pages[0])
+        for page in pages[1:]:
+            result = tracker.record("click", "next >", page)
+            self.assertIsNone(result["termination_reason"])
+            self.assertEqual(result["no_progress_steps"], 0)
+
+    def test_repeated_pagination_without_new_results_still_terminates(self):
+        tracker = EvidenceProgressTracker(exact_repeat_limit=2, no_progress_limit=4)
+        page = ["1", "2", "3"]
+        tracker.record("search", "query", page)
+        for _ in range(3):
+            result = tracker.record("click", "next >", page)
+            self.assertIsNone(result["termination_reason"])
+        result = tracker.record("click", "next >", page)
+        self.assertEqual(result["termination_reason"], "repeat_loop")
+
     def test_result_set_requires_three_new_asins_and_new_fingerprint(self):
         tracker = EvidenceProgressTracker(exact_repeat_limit=99, no_progress_limit=99)
         first = tracker.record("search", "one", ["1", "2"])
@@ -86,62 +110,18 @@ class TerminationV3Test(unittest.TestCase):
         self.assertFalse(two["runtime_progress_added"])
         self.assertEqual(final["termination_reason"], "repeat_loop")
 
-    def test_subpage_and_option_are_unique_evidence(self):
+    def test_only_new_options_refresh_progress_after_product_open(self):
         tracker = EvidenceProgressTracker(exact_repeat_limit=99, no_progress_limit=99)
         tracker.record("click", "111111111111", ["111111111111"])
-        first = tracker.record(
-            "click",
-            "Features",
-            ["111111111111"],
-            page_type="information_subpage",
-        )
-        repeated = tracker.record(
-            "click",
-            "Features",
-            ["111111111111"],
-            page_type="information_subpage",
-        )
-        option = tracker.record(
-            "click",
-            "白色",
-            ["111111111111"],
-            page_type="product_detail",
-            selected_options={"颜色分类": "白色"},
-        )
-        self.assertTrue(any(item.startswith("subpage:") for item in first["evidence_added"]))
-        self.assertFalse(
-            any(item.startswith("subpage:") for item in repeated["evidence_added"])
-        )
-        self.assertTrue(any(item.startswith("option:") for item in option["evidence_added"]))
-
-    def test_subpage_credit_budget_does_not_hide_new_runtime_subpage(self):
-        tracker = EvidenceProgressTracker(
-            exact_repeat_limit=99,
-            no_progress_limit=99,
-            subpage_progress_budget=1,
-        )
-        tracker.record("click", "111111111111", ["111111111111"])
-        tracker.record(
-            "click",
-            "Description",
-            ["111111111111"],
-            page_type="information_subpage",
-        )
-        second = tracker.record(
-            "click",
-            "Features",
-            ["111111111111"],
-            page_type="information_subpage",
-        )
-
-        self.assertFalse(second["credited_evidence_added"])
-        self.assertIn(
-            "subpage:111111111111:features",
-            second["runtime_progress_added"],
-        )
-        self.assertEqual(second["no_progress_steps"], 0)
-        self.assertEqual(second["evidence_counts"]["subpage"], 1)
-        self.assertEqual(second["runtime_evidence_counts"]["subpage"], 2)
+        for action in ("Description", "Features", "Reviews", "Attributes"):
+            result = tracker.record("click", action, ["111111111111"])
+            self.assertFalse(result["runtime_progress_added"])
+        first = tracker.record("click", "白色", ["111111111111"],
+                               selected_options={"颜色": "白色"})
+        repeated = tracker.record("click", "白色", ["111111111111"],
+                                  selected_options={"颜色": "白色"})
+        self.assertTrue(any(e.startswith("option:") for e in first["evidence_added"]))
+        self.assertFalse(repeated["runtime_progress_added"])
 
     def test_reopening_same_product_and_option_still_terminates(self):
         tracker = EvidenceProgressTracker(

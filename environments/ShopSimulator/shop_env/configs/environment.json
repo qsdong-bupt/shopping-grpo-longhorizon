@@ -1,5 +1,5 @@
 {
-  "environment_version": "shopsimulator-environment-v2.1",
+  "environment_version": "shopsimulator-environment-v2.2",
   "search": {
     "version": "shopsimulator-multifield-bm25-v2",
     "top_k": 150,
@@ -29,13 +29,12 @@
     "reward_unverifiable": 0.0
   },
   "termination": {
-    "version": "shopping-termination-v3",
+    "version": "shopping-termination-v5-pagination-progress",
     "exact_repeat_limit": 2,
     "no_progress_limit": 4,
     "max_steps": 35,
     "min_new_asins_per_result_set": 3,
     "product_open_progress_budget": 5,
-    "subpage_progress_budget": 6,
     "result_set_progress_budget": 3
   },
   "reward_feature_version": "shopping-reward-features-v1",
@@ -43,6 +42,6 @@
   "variant_price_version": "variant-price-v1",
   "comparator_version": "shopping-comparators-v1",
   "brand_alias_version": "brand-aliases-v1",
-  "observation_version": "shopping-observation-v2",
-  "tool_version": "shopping-tools-v2"
+  "observation_version": "shopping-observation-v3",
+  "tool_version": "shopping-tools-v3"
 }

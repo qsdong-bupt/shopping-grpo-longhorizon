@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import math
-
-
-OBSERVATION_VERSION = "shopping-observation-v2"
+OBSERVATION_VERSION = "shopping-observation-v3"
 
 
 def _compact_list(value, limit=10):
@@ -16,7 +13,7 @@ def _compact_list(value, limit=10):
     return [str(item) for item in value[:limit] if str(item).strip()]
 
 
-def product_summary(product: dict, *, rank: int | None = None) -> dict:
+def product_summary(product: dict, *, rank: int | None = None, full_attributes=False) -> dict:
     pricing = product.get("Price")
     if pricing is None:
         pricing = product.get("pricing")
@@ -27,7 +24,8 @@ def product_summary(product: dict, *, rank: int | None = None) -> dict:
         "category": str(product.get("category") or ""),
         "price": pricing,
         "key_attributes": _compact_list(
-            product.get("attribute") or product.get("Attributes") or []
+            product.get("attribute") or product.get("Attributes") or [],
+            limit=None if full_attributes else 10,
         ),
     }
     if rank is not None:
@@ -81,10 +79,10 @@ def build_observation_state(
                 ],
             }
         )
-    elif page_type in {"product_detail", "information_subpage"}:
+    elif page_type == "product_detail":
         asin = session.get("asin")
         product = product_item_dict.get(asin, {})
-        state["product"] = product_summary(product)
+        state["product"] = product_summary(product, full_attributes=True)
         state["selected_options"] = dict(session.get("options") or {})
         state["available_options"] = {
             str(key): _compact_list(values, limit=100)
@@ -92,16 +90,6 @@ def build_observation_state(
         }
         if session.get("selected_price") is not None:
             state["selected_price"] = session["selected_price"]
-        if page_type == "information_subpage":
-            subpage = str(session.get("subpage") or "information")
-            field = {
-                "description": "Description",
-                "features": "BulletPoints",
-                "reviews": "Reviews",
-                "attributes": "Attributes",
-            }.get(subpage.casefold())
-            state["subpage"] = subpage
-            state["content"] = product.get(field, "") if field else ""
     return state
 
 
@@ -110,6 +98,5 @@ def page_type_from_name(page_name: str) -> str:
         "": "search_home",
         "search_results": "search_results",
         "item_page": "product_detail",
-        "item_sub_page": "information_subpage",
         "done": "terminal",
     }.get(page_name, "unknown")

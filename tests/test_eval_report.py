@@ -1,99 +1,74 @@
+"""Report integration tests for the current build_data/main API."""
+import importlib.util
 import json
-import tempfile
-import unittest
 from pathlib import Path
 
-from scripts.build_glm_report import build_data
+import pytest
+
+SPEC = importlib.util.spec_from_file_location("eval_report", Path(__file__).resolve().parents[1] / "scripts/build_eval_report.py")
+report = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(report)
 
 
-class EvaluationReportTest(unittest.TestCase):
-    def test_report_reads_any_evaluation_directory_and_model_name(self):
-        with tempfile.TemporaryDirectory() as directory:
-            run_dir = Path(directory)
-            summary = {
-                "completed_tasks": 1,
-                "done_tasks": 1,
-                "done_rate": 1.0,
-                "strict_successes": 1,
-                "strict_success_rate": 1.0,
-                "strict_success_task_ids": [42],
-                "purchase_successes": 1,
-                "purchase_success_rate": 1.0,
-                "mean_final_reward": 1.0,
-                "mean_weighted_score": 1.0,
-                "average_steps": 1.0,
-                "protocol": {"model": "new-model-1"},
-            }
-            trajectory = {
-                "task_id": 42,
-                "status": "done",
-                "done": True,
-                "final_reward": 1.0,
-                "steps": [],
-                "blocked_tool_calls": [],
-                "initial_result": {"instruction": "test"},
-                "terminal_result": {
-                    "reward_detail": {"reward_type": "gold_purchase", "purchase_success": True},
-                    "termination_reason": "gold_purchase",
-                },
-            }
-            (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
-            (run_dir / "trajectories.jsonl").write_text(
-                json.dumps(trajectory) + "\n", encoding="utf-8"
-            )
-
-            data = build_data(run_dir)
-
-            self.assertEqual(data["meta"]["model"], "new-model-1")
-            self.assertEqual(data["summary"]["total"], 1)
-
-    def test_report_includes_early_abstain_and_guard_per_task(self):
-        with tempfile.TemporaryDirectory() as directory:
-            run_dir = Path(directory)
-            summary = {
-                "completed_tasks": 1,
-                "done_tasks": 1,
-                "done_rate": 1.0,
-                "strict_successes": 0,
-                "strict_success_rate": 0.0,
-                "strict_success_task_ids": [],
-                "purchase_successes": 0,
-                "purchase_success_rate": 0.0,
-                "mean_final_reward": 0.0,
-                "mean_weighted_score": 0.0,
-                "average_steps": 1.0,
-                "protocol": {"model": "new-model-1"},
-            }
-            trajectory = {
-                "task_id": 42,
-                "status": "done",
-                "done": True,
-                "final_reward": 0.0,
-                "steps": [],
-                "blocked_tool_calls": [{"reason": "test_guard"}],
-                "initial_result": {"instruction": "test"},
-                "terminal_result": {
-                    "reward_detail": {
-                        "reward_type": "early_abstain",
-                        "purchase_success": False,
-                    },
-                    "termination_reason": "early_abstain",
-                },
-            }
-            (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
-            (run_dir / "trajectories.jsonl").write_text(
-                json.dumps(trajectory) + "\n", encoding="utf-8"
-            )
-
-            data = build_data(run_dir)
-
-            early_abstain = next(
-                item for item in data["charts"]["outcomes"]
-                if item["key"] == "early_abstain"
-            )
-            self.assertEqual(early_abstain["value"], 1)
-            self.assertEqual(data["summary"]["guard_per_task"], 1.0)
+def row(task=1, reward_valid=True):
+    detail = {"reward_version": "shopsimulator-reward-v3", "reward_type": "gold_purchase",
+              "reward_valid": reward_valid, "purchase_success": True, "termination_reason": "gold_purchase"}
+    return {"task_id": task, "status": "done", "done": True, "steps": [],
+            "messages": [{"role": "user", "content": '</script><img src=x onerror="alert(1)">'}],
+            "terminal_result": {"done": True, "over": True, "reward_detail": detail}}
 
 
-if __name__ == "__main__":
-    unittest.main()
+def write_run(path, rows):
+    (path / "summary.json").write_text(json.dumps({"strict_successes": 900, "protocol": {"model": "test"}}), encoding="utf-8")
+    (path / "trajectories.jsonl").write_text("".join(json.dumps(item) + "\n" for item in rows), encoding="utf-8")
+
+
+def test_report_recomputes_success_and_adds_failure_analysis(tmp_path):
+    write_run(tmp_path, [row(), row(2, False)])
+    data = report.build_data(tmp_path)
+    assert data["summary"]["strict"] == 1
+    assert data["failure_analysis"]["tasks"] == 2
+    assert data["rows"][0]["failure_analysis"]["final_category"] == "success"
+    assert data["rows"][1]["failure_analysis"]["final_category"] == "review_required"
+
+
+def test_duplicate_tasks_and_empty_input_rejected(tmp_path):
+    write_run(tmp_path, [row(), row()])
+    with pytest.raises(ValueError, match="duplicate task IDs"):
+        report.build_data(tmp_path)
+    write_run(tmp_path, [])
+    with pytest.raises(ValueError, match="Not enough"):
+        report.build_data(tmp_path)
+
+
+def test_report_limit_applies_to_analysis_and_exports(tmp_path):
+    write_run(tmp_path, [row(), row(2)])
+    output = tmp_path / "limited.html"
+    report.main(["--run-dir", str(tmp_path), "--output", str(output), "--limit", "1"])
+    summary = json.loads(output.with_suffix(".failure_analysis.summary.json").read_text(encoding="utf-8"))
+    details = [json.loads(line) for line in output.with_suffix(".failure_analysis.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert summary["tasks"] == len(details) == 1
+    assert details[0]["task_id"] == 1
+    assert '900' in (tmp_path / "summary.json").read_text(encoding="utf-8")
+
+
+def test_html_injection_protection_and_analysis_controls(tmp_path):
+    write_run(tmp_path, [row()])
+    data = report.build_data(tmp_path)
+    html = report.render_html(data)
+    assert '</script><img' not in html
+    assert "failure-category-filter" in html
+    assert "failure-issue-filter" in html
+    assert "failure-review-filter" in html
+    assert "row.failure_analysis" in html
+    payload = html.split("const REPORT_DATA = ", 1)[1].split(";\nconst S", 1)[0]
+    assert json.loads(payload)["rows"][0]["trajectory"] == row()
+
+
+def test_infrastructure_failure_in_report(tmp_path):
+    item = row()
+    item.update(status="error", done=False, terminal_result={}, error={"type": "TimeoutError", "message": "timeout"})
+    write_run(tmp_path, [item])
+    analysis = report.build_data(tmp_path)["rows"][0]["failure_analysis"]
+    assert analysis["final_category"] == "infrastructure_failure"
+    assert analysis["issue_tags"] == ["environment_or_service_error"]

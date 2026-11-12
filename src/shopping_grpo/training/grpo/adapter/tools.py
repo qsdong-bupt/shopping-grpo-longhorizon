@@ -57,19 +57,16 @@ class ShopSimulatorTool(BaseTool):
             _terminate(state, "max_steps")
             return ToolResponse(text="Error: maximum executed tool steps reached."), 0.0, {"reason": "max_steps"}
         parameters = parameters if isinstance(parameters, dict) else {}
-        # think 不触碰环境，只记录一次模型决策；其余工具必须经过动作守卫。
-        if self.name == "think":
-            step = _append_step(state, self.name, parameters)
-            if len(state["steps"]) >= state["max_steps"]:
-                _terminate(state, "max_steps")
-                return ToolResponse(text="Error: maximum executed tool steps reached."), 0.0, step
-            return ToolResponse(text="Reasoning recorded. Continue with one environment tool call."), 0.0, step
         observation = state.get("latest_observation", "")
         record_action_attempt(state, self.name, parameters, observation)
         state["action_attempt_after_truncation_count"] += int(
             bool(state.get("latest_observation_truncated"))
         )
-        reason = action_reject_reason(self.name, parameters, observation)
+        reason = action_reject_reason(
+            self.name,
+            parameters,
+            observation,
+        )
         if reason:
             state["guard_rejection_count"] += 1
             reason_counts = state["guard_rejection_reason_counts"]
@@ -87,7 +84,11 @@ class ShopSimulatorTool(BaseTool):
         try:
             # 先转换成环境动作，再在线程中调用同步客户端；终局 reward 只信任
             # 环境返回的 Reward v3 结构，避免训练侧自行猜测分数。
-            action = tool_call_to_action(self.name, parameters)
+            action = tool_call_to_action(self.name, parameters, observation)
+            resolved_option = None
+            if self.name == "select_option":
+                from shopping_grpo.environment.options import resolve_option
+                resolved_option = resolve_option(parameters["option_id"], observation)
             result = await asyncio.to_thread(env.step, action)
             if result.get("observation_state") is not None:
                 observation = render_structured_observation(
@@ -111,6 +112,8 @@ class ShopSimulatorTool(BaseTool):
                 infrastructure_invalid=True,
             )
             return ToolResponse(text=f"Error: ShopSimulator tool execution failed: {exc}"), 0.0, {"error": state["error"]}
+        if resolved_option is not None:
+            step["resolved_option"] = resolved_option
         state["consecutive_guard_rejections"] = 0
         if step["done"]:
             state["done"] = True
@@ -127,7 +130,14 @@ class ShopSimulatorTool(BaseTool):
                 _mark_infrastructure_invalid(state, "invalid_terminal_result")
             else:
                 reward_detail = result.get("reward_detail")
-                if (
+                if result.get("reward_valid") is False:
+                    # 环境明确报告不可验证：按不可验证记账，不算基础设施失败。
+                    state["reward_valid"] = False
+                    state["reward_unverifiable"] = True
+                    state["reward_type"] = str(
+                        result.get("termination_reason") or "reward_unverifiable"
+                    )
+                elif (
                     isinstance(reward_detail, dict)
                     and reward_detail.get("reward_version")
                     == "shopsimulator-reward-v3"

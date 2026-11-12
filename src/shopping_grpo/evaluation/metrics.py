@@ -17,7 +17,7 @@ from shopping_grpo.evaluation.trajectory import NORMALIZED_TRAJECTORY_VERSION
 from shopping_grpo.environment.product_id import PRODUCT_ID_CAPTURE
 
 
-DETERMINISTIC_METRICS_VERSION = "shopping-deterministic-metrics-v1"
+DETERMINISTIC_METRICS_VERSION = "shopping-deterministic-metrics-v2"
 REWARD_V3 = "shopsimulator-reward-v3"
 _ASIN = re.compile(rf"(?<!\d){PRODUCT_ID_CAPTURE}(?!\d)")
 _INFRASTRUCTURE_ERROR_TYPES = {
@@ -272,20 +272,8 @@ def compute_deterministic_metrics(normalized: object) -> dict:
             "tool_counts": dict(sorted(tool_counts.items())),
             "search_count": tool_counts.get("search_products", 0),
             "open_product_count": tool_counts.get("open_product", 0),
-            "information_page_count": sum(
-                tool_counts.get(name, 0)
-                for name in (
-                    "view_attributes",
-                    "view_description",
-                    "view_features",
-                    "view_reviews",
-                )
-            ),
             "select_option_count": tool_counts.get("select_option", 0),
             "buy_count": tool_counts.get("buy_now", 0),
-            "finish_without_purchase_count": tool_counts.get(
-                "finish_without_purchase", 0
-            ),
             "visible_search_candidate_count": len(visible_asins),
             "opened_candidate_count": len(opened_asins),
         },
